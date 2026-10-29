@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type KeyboardEvent } from "react";
+import { useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import {
   DEFAULT_SHIFT,
   formatTime,
@@ -9,6 +9,10 @@ import {
   stepTime,
   type Shift,
 } from "@/lib/income";
+import { dragTime } from "@/lib/motion";
+
+/** これだけ動いたらドラッグとみなす（px） */
+const DRAG_START_PX = 4;
 
 type Props = {
   month: number;
@@ -25,12 +29,22 @@ type Props = {
 
 type Field = "start" | "end";
 
+type Drag = {
+  field: Field;
+  y: number;
+  /** ドラッグを始めたときの時刻（分） */
+  start: number;
+  /** ドラッグで変えた入力（動かしていなければ null） */
+  values: Record<Field, string> | null;
+};
+
 /** 時刻の入れ物。日の列の上に出るすりガラスの帯 */
 export function TimeEditor({ month, day, shift, last, onSave, onRemove, onInvalid, onClose }: Props) {
   const [text, setText] = useState<Record<Field, string>>({
     start: shift ? formatTime(shift.start) : "",
     end: shift ? formatTime(shift.end) : "",
   });
+  const drag = useRef<Drag | null>(null);
 
   const save = (next: Shift) => {
     setText({ start: formatTime(next.start), end: formatTime(next.end) });
@@ -50,6 +64,9 @@ export function TimeEditor({ month, day, shift, last, onSave, onRemove, onInvali
     else setText({ start: formatTime(next.start), end: formatTime(next.end) });
   };
 
+  const current = (field: Field): number =>
+    parseTime(text[field]) ?? shift?.[field] ?? DEFAULT_SHIFT[field];
+
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>, field: Field) => {
     if (e.key === "Enter") {
       commit(text);
@@ -57,10 +74,42 @@ export function TimeEditor({ month, day, shift, last, onSave, onRemove, onInvali
     }
     if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
     e.preventDefault();
-    const current = parseTime(text[field]) ?? shift?.[field] ?? DEFAULT_SHIFT[field];
-    const values = { ...text, [field]: formatTime(stepTime(current, e.key === "ArrowUp" ? 1 : -1)) };
+    const values = {
+      ...text,
+      [field]: formatTime(stepTime(current(field), e.key === "ArrowUp" ? 1 : -1)),
+    };
     setText(values);
     commit(values);
+  };
+
+  // 数字を上下にドラッグすると 12px ごとに15分。動かさずに離したらその場で打ち込める
+  const onPointerDown = (e: PointerEvent<HTMLInputElement>, field: Field) => {
+    if (e.button !== 0 || document.activeElement === e.currentTarget) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { field, y: e.clientY, start: current(field), values: null };
+  };
+
+  const onPointerMove = (e: PointerEvent<HTMLInputElement>) => {
+    const d = drag.current;
+    if (!d) return;
+    const dy = e.clientY - d.y;
+    if (d.values === null && Math.abs(dy) < DRAG_START_PX) return;
+    const values = { ...text, [d.field]: formatTime(dragTime(d.start, dy)) };
+    d.values = values;
+    setText(values);
+  };
+
+  const onPointerUp = (e: PointerEvent<HTMLInputElement>) => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d) return;
+    if (d.values) {
+      commit(d.values);
+    } else {
+      e.currentTarget.focus();
+      e.currentTarget.select();
+    }
   };
 
   const timeInput = (field: Field, label: string) => (
@@ -74,6 +123,12 @@ export function TimeEditor({ month, day, shift, last, onSave, onRemove, onInvali
       onChange={(e) => setText({ ...text, [field]: e.target.value })}
       onBlur={() => commit(text)}
       onKeyDown={(e) => onKeyDown(e, field)}
+      onPointerDown={(e) => onPointerDown(e, field)}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={() => {
+        drag.current = null;
+      }}
     />
   );
 
