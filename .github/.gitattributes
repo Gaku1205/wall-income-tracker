@@ -1,0 +1,4 @@
+# Windows のランナー（exe を作る github-release）でも、シェルスクリプトを LF のまま取り出す（CRLF だと bash が読めない）
+*.sh text eol=lf
+*.yml text eol=lf
+scripts/tests/fake-gh text eol=lf

@@ -1,0 +1,176 @@
+# 全自動の進行役：CI・レビューAI・修正AIが終わるたびに、次の一手を決める。
+#   CI 通過     → レビューAIを動かす
+#   CI 失敗     → AIに直させる（2回まで。超えたら ai:stuck を付けて人間に通知）
+#   レビュー指摘なし → 自動でマージ（ai:hold が付いていたら人間に通知）
+#   レビュー指摘あり → AIに直させる（同じく2回まで）
+#   直す依頼のあと変更が入らなかった → 人間に回す
+#   AIのpushでCIが承認待ちになった → 空のコミットでCIを動かし直す
+# workflow_run は main にあるこのファイルで動くので、PRの中身でこの判断を書き換えられない。
+# 次のワークフローを動かすために、ラベル・コメント・マージはオーナーのトークン（PIPELINE_TOKEN）で行う。
+name: Pipeline
+
+on:
+  workflow_run:
+    workflows: [CI, Claude Review, Claude Mention]
+    types: [completed]
+
+jobs:
+  after-ci:
+    if: >-
+      github.event.workflow_run.name == 'CI' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      contains(fromJSON('["success", "failure"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: pipeline-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # 秘密鍵を PKCS#8 にそろえる（create-github-app-token は Node 24 だと「BEGIN RSA PRIVATE KEY」の形式を読めず Invalid keyData になる）
+      - name: パイプラインの鍵の秘密鍵をそろえる
+        id: app-key
+        if: vars.PIPELINE_APP_ID != ''
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+        run: |
+          # 貼るときに改行が消えて1行になっていても、頭と終わりの行と中身から組み立て直す
+          k=$(printf '%s' "$KEY" | tr -d '\r'); k=${k//\\n/$'\n'}
+          type=$(printf '%s' "$k" | grep -oE 'BEGIN [A-Z ]*PRIVATE KEY' | head -1 | sed 's/^BEGIN //')
+          # 頭と終わりの行が抜けていたら、GitHub App の鍵の形式（RSA）とみなす
+          [ -n "$type" ] || type="RSA PRIVATE KEY"
+          body=$(printf '%s' "$k" | sed -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----//' -e 's/-----END [A-Z ]*PRIVATE KEY-----//' | tr -d ' \n\t"')
+          pem=$(printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$type" "$(printf '%s' "$body" | fold -w 64)" "$type" | openssl pkey 2> /dev/null) \
+            || { b=no; e=no; case "$k" in *"-----BEGIN"*) b=yes;; esac; case "$k" in *"-----END"*) e=yes;; esac
+                 echo "::error::PIPELINE_APP_PRIVATE_KEY を秘密鍵として読めません（.pem の中身を -----BEGIN から -----END まで全部貼る）。手がかり：全体 ${#KEY} 文字・$(printf '%s\n' "$KEY" | wc -l) 行・BEGIN の行 $b・END の行 $e・中身 ${#body} 文字（2048ビットの鍵なら中身は約1,600文字）"; exit 1; }
+          while IFS= read -r line; do [ -n "$line" ] && echo "::add-mask::$line"; done <<< "$pem"
+          { echo 'pem<<PEM_END'; echo "$pem"; echo 'PEM_END'; } >> "$GITHUB_OUTPUT"
+      # パイプラインの鍵：GitHub App があれば、その1時間だけの鍵を使う（回数制限がオーナーと別・期限切れなし）。無ければ PIPELINE_TOKEN
+      - name: パイプラインの鍵を作る
+        id: app-token
+        if: steps.app-key.outputs.pem != ''
+        # 鍵が作れなくても（秘密鍵の貼り間違いなど）止めずに PIPELINE_TOKEN で続ける。Doctor が ❌ で知らせる
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PIPELINE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.pem }}
+      - uses: actions/checkout@v6
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+          AGENT_DESK_URL: ${{ vars.AGENT_DESK_URL }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          READ_TOKEN: ${{ github.token }}
+        run: .github/scripts/after-ci.sh
+
+  after-review:
+    if: >-
+      github.event.workflow_run.name == 'Claude Review' &&
+      contains(fromJSON('["success", "failure"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: pipeline-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      # 秘密鍵を PKCS#8 にそろえる（create-github-app-token は Node 24 だと「BEGIN RSA PRIVATE KEY」の形式を読めず Invalid keyData になる）
+      - name: パイプラインの鍵の秘密鍵をそろえる
+        id: app-key
+        if: vars.PIPELINE_APP_ID != ''
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+        run: |
+          # 貼るときに改行が消えて1行になっていても、頭と終わりの行と中身から組み立て直す
+          k=$(printf '%s' "$KEY" | tr -d '\r'); k=${k//\\n/$'\n'}
+          type=$(printf '%s' "$k" | grep -oE 'BEGIN [A-Z ]*PRIVATE KEY' | head -1 | sed 's/^BEGIN //')
+          # 頭と終わりの行が抜けていたら、GitHub App の鍵の形式（RSA）とみなす
+          [ -n "$type" ] || type="RSA PRIVATE KEY"
+          body=$(printf '%s' "$k" | sed -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----//' -e 's/-----END [A-Z ]*PRIVATE KEY-----//' | tr -d ' \n\t"')
+          pem=$(printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$type" "$(printf '%s' "$body" | fold -w 64)" "$type" | openssl pkey 2> /dev/null) \
+            || { b=no; e=no; case "$k" in *"-----BEGIN"*) b=yes;; esac; case "$k" in *"-----END"*) e=yes;; esac
+                 echo "::error::PIPELINE_APP_PRIVATE_KEY を秘密鍵として読めません（.pem の中身を -----BEGIN から -----END まで全部貼る）。手がかり：全体 ${#KEY} 文字・$(printf '%s\n' "$KEY" | wc -l) 行・BEGIN の行 $b・END の行 $e・中身 ${#body} 文字（2048ビットの鍵なら中身は約1,600文字）"; exit 1; }
+          while IFS= read -r line; do [ -n "$line" ] && echo "::add-mask::$line"; done <<< "$pem"
+          { echo 'pem<<PEM_END'; echo "$pem"; echo 'PEM_END'; } >> "$GITHUB_OUTPUT"
+      # パイプラインの鍵：GitHub App があれば、その1時間だけの鍵を使う（回数制限がオーナーと別・期限切れなし）。無ければ PIPELINE_TOKEN
+      - name: パイプラインの鍵を作る
+        id: app-token
+        if: steps.app-key.outputs.pem != ''
+        # 鍵が作れなくても（秘密鍵の貼り間違いなど）止めずに PIPELINE_TOKEN で続ける。Doctor が ❌ で知らせる
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PIPELINE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.pem }}
+      - uses: actions/checkout@v6
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+          AGENT_DESK_URL: ${{ vars.AGENT_DESK_URL }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          READ_TOKEN: ${{ github.token }}
+        run: .github/scripts/after-review.sh
+
+  after-mention:
+    if: >-
+      github.event.workflow_run.name == 'Claude Mention' &&
+      contains(fromJSON('["success", "failure"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # 秘密鍵を PKCS#8 にそろえる（create-github-app-token は Node 24 だと「BEGIN RSA PRIVATE KEY」の形式を読めず Invalid keyData になる）
+      - name: パイプラインの鍵の秘密鍵をそろえる
+        id: app-key
+        if: vars.PIPELINE_APP_ID != ''
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+        run: |
+          # 貼るときに改行が消えて1行になっていても、頭と終わりの行と中身から組み立て直す
+          k=$(printf '%s' "$KEY" | tr -d '\r'); k=${k//\\n/$'\n'}
+          type=$(printf '%s' "$k" | grep -oE 'BEGIN [A-Z ]*PRIVATE KEY' | head -1 | sed 's/^BEGIN //')
+          # 頭と終わりの行が抜けていたら、GitHub App の鍵の形式（RSA）とみなす
+          [ -n "$type" ] || type="RSA PRIVATE KEY"
+          body=$(printf '%s' "$k" | sed -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----//' -e 's/-----END [A-Z ]*PRIVATE KEY-----//' | tr -d ' \n\t"')
+          pem=$(printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$type" "$(printf '%s' "$body" | fold -w 64)" "$type" | openssl pkey 2> /dev/null) \
+            || { b=no; e=no; case "$k" in *"-----BEGIN"*) b=yes;; esac; case "$k" in *"-----END"*) e=yes;; esac
+                 echo "::error::PIPELINE_APP_PRIVATE_KEY を秘密鍵として読めません（.pem の中身を -----BEGIN から -----END まで全部貼る）。手がかり：全体 ${#KEY} 文字・$(printf '%s\n' "$KEY" | wc -l) 行・BEGIN の行 $b・END の行 $e・中身 ${#body} 文字（2048ビットの鍵なら中身は約1,600文字）"; exit 1; }
+          while IFS= read -r line; do [ -n "$line" ] && echo "::add-mask::$line"; done <<< "$pem"
+          { echo 'pem<<PEM_END'; echo "$pem"; echo 'PEM_END'; } >> "$GITHUB_OUTPUT"
+      # パイプラインの鍵：GitHub App があれば、その1時間だけの鍵を使う（回数制限がオーナーと別・期限切れなし）。無ければ PIPELINE_TOKEN
+      - name: パイプラインの鍵を作る
+        id: app-token
+        if: steps.app-key.outputs.pem != ''
+        # 鍵が作れなくても（秘密鍵の貼り間違いなど）止めずに PIPELINE_TOKEN で続ける。Doctor が ❌ で知らせる
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PIPELINE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.pem }}
+      - uses: actions/checkout@v6
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+          AGENT_DESK_URL: ${{ vars.AGENT_DESK_URL }}
+          RUN_STARTED: ${{ github.event.workflow_run.run_started_at }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          READ_TOKEN: ${{ github.token }}
+        run: .github/scripts/after-mention.sh

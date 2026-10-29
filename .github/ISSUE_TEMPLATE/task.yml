@@ -1,0 +1,35 @@
+name: タスク
+description: 自分で細かく書く作業。書けたら「ai:implement」ラベルを付ける（ざっくりなら「メモ」のほうが楽）
+title: "[タスク] "
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: なぜこれをやるのか（1〜2行）
+    validations:
+      required: true
+  - type: textarea
+    id: todo
+    attributes:
+      label: やること
+      description: 何を変えるか。1つのPRで終わるサイズにする
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 受け入れ条件
+      description: できたかどうかを判定する条件。箇条書きで
+      placeholder: |
+        - [ ] 〇〇すると△△になる
+        - [ ] 確認コマンド（pipeline.json の checks。無ければ型チェック・リント・テスト・ビルド）が全部通る
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: やらないこと
+      description: 今回は触らない範囲（あれば）
+    validations:
+      required: false

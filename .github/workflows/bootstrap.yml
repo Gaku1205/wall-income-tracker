@@ -1,0 +1,68 @@
+# テンプレートから作ったリポジトリの、最初の準備を自動でやる（ラベルを作る・CLAUDE.md の自己編集の節を消す・診断を出す）。
+# ラベル（ai:plan）がもうあれば何もしないので、2回目以降は空振りする。結果は実行画面の Summary に出る。
+name: Bootstrap
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  bootstrap:
+    # テンプレート（本体）自身では動かさない
+    if: ${{ !github.event.repository.is_template }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # 秘密鍵を PKCS#8 にそろえる（create-github-app-token は Node 24 だと「BEGIN RSA PRIVATE KEY」の形式を読めず Invalid keyData になる）
+      - name: パイプラインの鍵の秘密鍵をそろえる
+        id: app-key
+        if: vars.PIPELINE_APP_ID != ''
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+        run: |
+          # 貼るときに改行が消えて1行になっていても、頭と終わりの行と中身から組み立て直す
+          k=$(printf '%s' "$KEY" | tr -d '\r'); k=${k//\\n/$'\n'}
+          type=$(printf '%s' "$k" | grep -oE 'BEGIN [A-Z ]*PRIVATE KEY' | head -1 | sed 's/^BEGIN //')
+          # 頭と終わりの行が抜けていたら、GitHub App の鍵の形式（RSA）とみなす
+          [ -n "$type" ] || type="RSA PRIVATE KEY"
+          body=$(printf '%s' "$k" | sed -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----//' -e 's/-----END [A-Z ]*PRIVATE KEY-----//' | tr -d ' \n\t"')
+          pem=$(printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$type" "$(printf '%s' "$body" | fold -w 64)" "$type" | openssl pkey 2> /dev/null) \
+            || { b=no; e=no; case "$k" in *"-----BEGIN"*) b=yes;; esac; case "$k" in *"-----END"*) e=yes;; esac
+                 echo "::error::PIPELINE_APP_PRIVATE_KEY を秘密鍵として読めません（.pem の中身を -----BEGIN から -----END まで全部貼る）。手がかり：全体 ${#KEY} 文字・$(printf '%s\n' "$KEY" | wc -l) 行・BEGIN の行 $b・END の行 $e・中身 ${#body} 文字（2048ビットの鍵なら中身は約1,600文字）"; exit 1; }
+          while IFS= read -r line; do [ -n "$line" ] && echo "::add-mask::$line"; done <<< "$pem"
+          { echo 'pem<<PEM_END'; echo "$pem"; echo 'PEM_END'; } >> "$GITHUB_OUTPUT"
+      # パイプラインの鍵：GitHub App があれば、その1時間だけの鍵を使う（回数制限がオーナーと別・期限切れなし）。無ければ PIPELINE_TOKEN
+      - name: パイプラインの鍵を作る
+        id: app-token
+        if: steps.app-key.outputs.pem != ''
+        # 鍵が作れなくても（秘密鍵の貼り間違いなど）止めずに PIPELINE_TOKEN で続ける。Doctor が ❌ で知らせる
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PIPELINE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.pem }}
+      - uses: actions/checkout@v4
+      - name: 最初の準備
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PIPELINE_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+          HAS_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && '1' || '0' }}
+          HAS_PIPELINE_TOKEN: ${{ (steps.app-token.outputs.token || secrets.PIPELINE_TOKEN) != '' && '1' || '0' }}
+          USING_APP: ${{ steps.app-token.outputs.token != '' && '1' || '0' }}
+          HAS_NTFY: ${{ secrets.NTFY_TOPIC != '' && '1' || '0' }}
+        run: .github/scripts/bootstrap.sh | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: CLAUDE.md の変更をコミットする
+        if: env.CHANGED_CLAUDE_MD == '1'
+        run: |
+          git config user.name "pipeline"
+          git config user.email "noreply@github.com"
+          git add CLAUDE.md
+          git commit -m "CLAUDE.md：ai-dev-template 自身の作業の節を消す（自動）"
+          git push origin HEAD:main

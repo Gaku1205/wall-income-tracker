@@ -1,0 +1,42 @@
+# やり直しの目覚まし：見張り役（watchdog.sh）が、使用量の上限などの待ちが明ける時刻を入れて動かす。
+# その時刻まで待ってから、見張り役を動かすだけ（GitHub の定期の起動は、混んでいると数時間遅れるため）。
+# 目覚ましは1つだけ。新しく動かされたら、待っている古い物は止まる（見張り役が、いちばん早い時刻を入れ直すので）。
+# 公開していないリポジトリでは、待つあいだも Actions の時間を使う。止めるには、変数 RETRY_TIMER に off を入れる
+name: Retry Timer
+run-name: やり直しの目覚まし ${{ inputs.at }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      at:
+        description: 見張り役を動かす時刻（エポック秒）
+        required: true
+
+concurrency:
+  group: retry-timer
+  cancel-in-progress: true
+
+jobs:
+  wait:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      actions: write
+    steps:
+      - name: 時刻まで待って、見張り役を動かす
+        env:
+          AT: ${{ inputs.at }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+        run: |
+          case "$AT" in ''|*[!0-9]*) echo "::error::時刻（at）は数字で入れる"; exit 1 ;; esac
+          wait=$(( AT - $(date +%s) ))
+          # 待ちはジョブの上限より短く（見張り役は 340 分までしか入れないが、手で動かしたときのため）
+          [ "$wait" -gt 20400 ] && wait=20400
+          if [ "$wait" -gt 0 ]; then
+            echo "$(TZ=Asia/Tokyo date -d "@$AT" +%H:%M) まで $(( wait / 60 )) 分待ちます"
+            sleep "$wait"
+          fi
+          gh api -X POST "repos/$REPO/actions/workflows/watchdog.yml/dispatches" -f ref="$REF" > /dev/null
+          echo "見張り役を動かしました"

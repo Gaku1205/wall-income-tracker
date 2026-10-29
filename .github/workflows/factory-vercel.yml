@@ -1,0 +1,52 @@
+# 工場：もうあるリポジトリを、あとから Vercel につなぐ（工場で作ったとき VERCEL_TOKEN が無かった物など）。
+# Actions → Factory Vercel → Run workflow で、リポジトリの名前を入れる。つないだあと、今の main で本番の公開を1回始め、
+# 本番の公開アドレスをリポジトリの Website 欄に入れる（もうつないであるリポジトリなら、公開とアドレスの調べ直しだけをする）。
+# テンプレート本体でだけ、強い鍵は Environment「factory」から使う
+name: Factory Vercel
+run-name: Vercel につなぐ ${{ inputs.repo }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: つなぐリポジトリの名前（owner は省く。例：pomodoro-log）
+        required: true
+
+jobs:
+  connect:
+    if: github.event.repository.is_template
+    environment: factory
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Vercel につなぐ
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+          NAME: ${{ inputs.repo }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          [[ "$NAME" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || { echo "::error::リポジトリの名前の形が違います"; exit 1; }
+          name="${NAME,,}"
+          out=$(REPO_FULL="$OWNER/$NAME" PROJECT="$name" .github/scripts/factory-vercel.sh) || { echo "::error::$out"; exit 1; }
+          echo "つないだ：$out"
+          # 今の main で、本番の公開を1回始める（空のコミットは、vercel.json の ignoreCommand で飛ばされるので、API で頼む）
+          repo_id=$(gh api "repos/$OWNER/$NAME" -q .id)
+          q=""; [ -n "$VERCEL_TEAM_ID" ] && q="?teamId=$VERCEL_TEAM_ID"
+          body=$(jq -nc --arg n "$out" --arg id "$repo_id" '{name: $n, project: $n, target: "production", gitSource: {type: "github", repoId: $id, ref: "main"}}')
+          if res=$(printf '%s' "$body" | curl -sS -X POST "https://api.vercel.com/v13/deployments$q" -H "Authorization: Bearer $VERCEL_TOKEN" -H "Content-Type: application/json" --data-binary @-) \
+             && url=$(printf '%s' "$res" | jq -r '.url // empty') && [ -n "$url" ]; then
+            echo "公開を始めた：https://$url"
+          else
+            echo "::warning::公開を始められませんでした（$(printf '%s' "$res" | jq -r '.error.message // "理由不明"' 2> /dev/null)）。次に main が変わったときに公開されます"
+          fi
+          # 本番の公開アドレスを調べて、リポジトリの Website 欄に入れる
+          if site=$(PROJECT="$out" REPO_FULL="$OWNER/$NAME" .github/scripts/factory-vercel-url.sh); then
+            echo "公開アドレス：$site（Website 欄に入れた）"
+          else
+            echo "::warning::公開アドレスがまだ決まっていません（Vercel の画面の Domains で確かめる）"
+          fi

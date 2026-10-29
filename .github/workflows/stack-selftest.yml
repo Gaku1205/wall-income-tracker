@@ -1,0 +1,91 @@
+# 言語と公開先のしくみの自己テスト（テンプレート本体だけ）：見本（examples/python）を、本物の GitHub のランナーで通す。
+#   python   実行環境をそろえる（setup-stack）→ 確認コマンド（run-checks）
+#   exe      Windows・Mac で pipeline.json の github-release の build を動かし、できた exe を動かして確かめる（Artifacts から落とせる）
+#   docker   App Runner に載せるのと同じイメージを作り、起動して /health と /hello に答えるか確かめる（AWS には出さない）
+# setup-stack・stack.sh・run-checks.sh・公開のスクリプト・見本を変えたPRで動く。手でも動かせる。
+name: Stack Selftest
+
+on:
+  pull_request:
+    paths:
+      - .github/actions/**
+      - .github/scripts/stack.sh
+      - .github/scripts/run-checks.sh
+      - .github/scripts/deploy-*.sh
+      - .github/workflows/stack-selftest.yml
+      - .github/workflows/deploy.yml
+      - examples/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    if: github.event.repository.is_template
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: 実行環境をそろえる
+        uses: ./.github/actions/setup-stack
+        with:
+          dir: examples/python
+      - name: 確認
+        working-directory: examples/python
+        run: '"$GITHUB_WORKSPACE/.github/scripts/run-checks.sh"'
+
+  exe:
+    if: github.event.repository.is_template
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: 実行環境をそろえる
+        uses: ./.github/actions/setup-stack
+        with:
+          dir: examples/python
+      - name: 配布物を作る（deploy.yml と同じく、pipeline.json の build）
+        shell: bash
+        working-directory: examples/python
+        run: |
+          build=$(jq -r '.deploy[] | select(.kind == "github-release") | .build' pipeline.json)
+          echo "作る：$build"
+          bash -eo pipefail -c "$build"
+          ls -la dist
+      - name: できた物を動かす
+        shell: bash
+        working-directory: examples/python
+        run: |
+          exe=dist/hello; [ -f dist/hello.exe ] && exe=dist/hello.exe
+          out=$("./$exe" Fukuoka)
+          echo "$out"
+          [ "$out" = "Hello, Fukuoka!" ] || { echo "::error::exe の出力が違う：$out"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hello-${{ matrix.os }}
+          path: examples/python/dist/*
+          retention-days: 7
+
+  docker:
+    if: github.event.repository.is_template
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: イメージを作る（App Runner に載せる物と同じ）
+        working-directory: examples/python
+        run: docker build -t hello-python:selftest .
+      - name: 起動して答えるか
+        run: |
+          docker run -d --name hello -p 8000:8000 hello-python:selftest
+          for _ in $(seq 1 30); do curl -fsS localhost:8000/health && break; sleep 1; done
+          health=$(curl -fsS localhost:8000/health)
+          hello=$(curl -fsS "localhost:8000/hello?name=Hakata")
+          echo "$health $hello"
+          [ "$health" = '{"status":"ok"}' ] || { echo "::error::/health が違う：$health"; docker logs hello; exit 1; }
+          [ "$hello" = '{"message":"Hello, Hakata!"}' ] || { echo "::error::/hello が違う：$hello"; docker logs hello; exit 1; }

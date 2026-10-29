@@ -1,0 +1,72 @@
+# 品質ゲート：PRごとに確認（pipeline.json の checks。無ければ型チェック・リント・テスト・ビルド）を回す。
+# 合否はAIではなく、ここで決める。
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      # 言語の実行環境と依存を入れる（pipeline.json に合わせる。無ければ今までの Node 22・npm ci）
+      - name: 実行環境をそろえる
+        id: stack
+        uses: ./.github/actions/setup-stack
+      # pipeline.json の checks を順に全部回す（無ければ型チェック・リント・テスト（あれば）・ビルド）
+      - name: 確認
+        run: .github/scripts/run-checks.sh
+      # 見た目のテスト：画面のスクショを、前の画像と比べる（Node のアプリで、package.json に test:visual があるときだけ）
+      - name: 見た目のテストがあるか
+        id: visual
+        run: |
+          enabled=false
+          if [ -n "${{ steps.stack.outputs.node }}" ] && [ -f package.json ]; then
+            enabled=$(jq -r '.scripts["test:visual"] != null' package.json)
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+      - name: 見た目のテスト用のブラウザを入れる
+        if: steps.visual.outputs.enabled == 'true'
+        run: npx playwright install --with-deps chromium
+      - name: 見た目のテスト
+        if: steps.visual.outputs.enabled == 'true'
+        run: npm run test:visual
+      - name: 見た目のテストの結果（差分の画像）を残す
+        if: failure() && steps.visual.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-diff
+          path: test-results/
+          retention-days: 7
+
+  # パイプラインのシェルスクリプトの静的チェック（書き間違いを先に見つける）
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: shellcheck
+        run: shellcheck -S warning -x -P SCRIPTDIR .github/scripts/*.sh .github/scripts/tests/*.sh
+
+  # パイプラインのスクリプトのテスト（疑似 gh。本物のGitHubには触らない）
+  script-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: スクリプトのテスト
+        run: .github/scripts/tests/run-all.sh

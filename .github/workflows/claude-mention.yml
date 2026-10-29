@@ -1,0 +1,66 @@
+# 差し戻し用：PRやIssueのコメントで「@claude 〜を直して」と書くとClaudeが対応する。
+name: Claude Mention
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  claude:
+    # 公開リポジトリでは誰でもコメントできるので、呼べるのはオーナー・メンバー・共同作業者と、
+    # パイプラインの App（ボット）だけ。AI自身（claude[bot]）は呼べない（自分で自分を呼ぶ繰り返しを防ぐ）
+    if: >-
+      contains(github.event.comment.body, '@claude') &&
+      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+       (github.event.comment.user.type == 'Bot' && github.event.comment.user.login != 'claude[bot]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: claude-mention-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    env:
+      # 自動で直させる最後の1回（3回目）は、いちばん強いモデルで直す（依頼のコメントに印が付く）
+      MODEL: "${{ contains(github.event.comment.body, 'auto-fix-model: opus') && 'opus' || 'sonnet' }}"
+      MAX_TURNS: "${{ contains(github.event.comment.body, 'auto-fix-model: opus') && '60' || '40' }}"
+    steps:
+      # 履歴も全部取る（push の前に main を取り込むため。下の --append-system-prompt）
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      # 言語の実行環境と依存を入れる（pipeline.json に合わせる。無ければ今までの Node 22・npm ci）
+      - name: 実行環境をそろえる
+        id: stack
+        uses: ./.github/actions/setup-stack
+      # 見た目のテストが落ちていたら、差分の画像を .visual-diff/ に取ってくる（AI が見て、意図した変更か崩れかを決める。git には入れない）
+      - name: 見た目のテストの差分の画像を取ってくる
+        if: github.event.issue.pull_request || github.event.pull_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: .github/scripts/fetch-visual-diff.sh
+      # パイプラインの App（ボット）がラベル・コメントで起こした実行を、AIのアクションが断らないようにする。
+      # AI自身（claude[bot]）は許さない（自分のコメントで自分を呼ぶ繰り返しを防ぐ）。Secret は使わない
+      - name: 起こしたボットを許可に入れる
+        id: bots
+        env:
+          SENDER: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+        run: |
+          list=""
+          if [ "$SENDER_TYPE" = Bot ] && [ "$SENDER" != "claude[bot]" ]; then
+            list="${SENDER},${SENDER%\[bot\]}"
+          fi
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+      - uses: anthropics/claude-code-action@v1
+        with:
+          allowed_bots: ${{ steps.bots.outputs.list }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--model ${{ env.MODEL }} --max-turns ${{ env.MAX_TURNS }} --allowedTools \"Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr comment:*),Bash(git fetch:*),Bash(git merge:*),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),${{ steps.stack.outputs.allowed }},Bash(.github/scripts/tests/run-all.sh),Bash(bash .github/scripts/tests/run-all.sh),Bash(shellcheck:*)\" --disallowedTools \"Bash(git push --force:*),Bash(git push -f:*),Bash(git push --force-with-lease:*),Bash(git rebase:*)\" --append-system-prompt \"push の前に、git fetch origin main と git merge origin/main で最新の main を取り込んでから、確認コマンドをもう一度通して push する。作業中に main のワークフローが更新されると、古い main のままの push は GitHub に拒否されるため。コンフリクトしたら両方の変更を残して解消する。.github/ のファイルは自分では変えない。見た目のテスト（test:visual）が落ちていて .visual-diff/ に画像があるときは、Read で開いて見る（〜-expected.png が前、〜-actual.png が今、〜-diff.png が違う所）。Issue で頼まれた変更による差なら、PR に「見た目を変えたので visual:update ラベルで基準の画像を撮り直してください」と書く。頼まれていない崩れ（文字の重複・はみ出し・ずれ・高さの急な変化など）なら、原因のコードを探して直す。.visual-diff/ はコミットしない。\""

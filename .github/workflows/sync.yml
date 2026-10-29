@@ -1,0 +1,94 @@
+# ai-dev-template の main が更新され、CI（スクリプトのテストを含む）が通ったら、アプリのリポジトリへ .github と docs/pipeline.md を自動で配る。
+# CIが落ちた版は配らない（壊れた版が、アプリ全部の main に入らないように）。
+# 配り先は、このテンプレートから作られたリポジトリ（自動）と .github/sync-targets に書いた物（sync-targets.sh が決める）。ワークフローも配るため、鍵（GitHub App か PIPELINE_TOKEN）に Workflows (Read and write) 権限が要る。
+name: Sync to apps
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # テンプレート（本体）でだけ動かす（wait の if）。配り先・テンプレートから作ったリポジトリでは動かない。
+  # 少し待ってから配る。待っている間に main がまた更新されたら、古い方の待ちは止まり、新しい方だけが配る
+  # （続けてマージすると、そのたびに配り先へPRができて、配り先のCIと進行役を何度も動かすため）
+  wait:
+    if: >-
+      github.event.repository.is_template &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: sync-to-apps-wait
+      cancel-in-progress: true
+    steps:
+      - name: 続けての更新を待つ
+        env:
+          # 手で動かしたときは待たない。待つ分は変数 SYNC_DELAY_MIN で変えられる（既定 15 分）
+          DELAY: ${{ vars.SYNC_DELAY_MIN }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          case "$DELAY" in ''|*[!0-9]*) DELAY=15 ;; esac
+          [ "$EVENT" = "workflow_dispatch" ] && DELAY=0
+          echo "${DELAY} 分待ってから配ります（その間に main が更新されたら、新しい方が配ります）"
+          sleep $(( DELAY * 60 ))
+
+  sync:
+    needs: wait
+    concurrency:
+      group: sync-to-apps
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      # 秘密鍵を PKCS#8 にそろえる（create-github-app-token は Node 24 だと「BEGIN RSA PRIVATE KEY」の形式を読めず Invalid keyData になる）
+      - name: パイプラインの鍵の秘密鍵をそろえる
+        id: app-key
+        if: vars.PIPELINE_APP_ID != ''
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+        run: |
+          # 貼るときに改行が消えて1行になっていても、頭と終わりの行と中身から組み立て直す
+          k=$(printf '%s' "$KEY" | tr -d '\r'); k=${k//\\n/$'\n'}
+          type=$(printf '%s' "$k" | grep -oE 'BEGIN [A-Z ]*PRIVATE KEY' | head -1 | sed 's/^BEGIN //')
+          # 頭と終わりの行が抜けていたら、GitHub App の鍵の形式（RSA）とみなす
+          [ -n "$type" ] || type="RSA PRIVATE KEY"
+          body=$(printf '%s' "$k" | sed -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----//' -e 's/-----END [A-Z ]*PRIVATE KEY-----//' | tr -d ' \n\t"')
+          pem=$(printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$type" "$(printf '%s' "$body" | fold -w 64)" "$type" | openssl pkey 2> /dev/null) \
+            || { b=no; e=no; case "$k" in *"-----BEGIN"*) b=yes;; esac; case "$k" in *"-----END"*) e=yes;; esac
+                 echo "::error::PIPELINE_APP_PRIVATE_KEY を秘密鍵として読めません（.pem の中身を -----BEGIN から -----END まで全部貼る）。手がかり：全体 ${#KEY} 文字・$(printf '%s\n' "$KEY" | wc -l) 行・BEGIN の行 $b・END の行 $e・中身 ${#body} 文字（2048ビットの鍵なら中身は約1,600文字）"; exit 1; }
+          while IFS= read -r line; do [ -n "$line" ] && echo "::add-mask::$line"; done <<< "$pem"
+          { echo 'pem<<PEM_END'; echo "$pem"; echo 'PEM_END'; } >> "$GITHUB_OUTPUT"
+      # パイプラインの鍵：GitHub App があれば、その1時間だけの鍵を使う（回数制限がオーナーと別・期限切れなし）。無ければ PIPELINE_TOKEN
+      - name: パイプラインの鍵を作る
+        id: app-token
+        if: steps.app-key.outputs.pem != ''
+        # 鍵が作れなくても（秘密鍵の貼り間違いなど）止めずに PIPELINE_TOKEN で続ける。Doctor が ❌ で知らせる
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PIPELINE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.pem }}
+          # 配り先にも push するので、このアカウントに入れた App の全部のリポジトリに使える鍵にする
+          owner: ${{ github.repository_owner }}
+      - uses: actions/checkout@v4
+        with:
+          # CIが通った版そのものを配る
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: アプリへ配る
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+        run: |
+          # 配り先を決められなかったら（鍵の不具合など）、黙って「配り先なし」にせず失敗にする
+          list=$(.github/scripts/sync-targets.sh .github/sync-targets)
+          mapfile -t targets < <(printf '%s\n' "$list" | awk 'NF')
+          if [ "${#targets[@]}" -eq 0 ]; then echo "配り先がありません（テンプレートから作ったリポジトリも、.github/sync-targets も無し）"; exit 0; fi
+          echo "配り先：${targets[*]}"
+          .github/scripts/sync-to-apps.sh "${targets[@]}"

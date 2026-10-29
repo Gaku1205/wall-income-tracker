@@ -1,0 +1,17 @@
+:root {
+  --bg: #0a0a0b;
+  --text: #dedfe3;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+}
+
+.container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 48px 20px;
+}

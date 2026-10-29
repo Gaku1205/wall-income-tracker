@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+# 疑似 gh：GitHub の API を、ファイル（MOCK_STATE の JSON）の中だけで真似する。パイプラインのスクリプトのテスト用。
+# 本物の gh が返す形のうち、スクリプトが使う物だけを実装している。知らない呼び出しは UNHANDLED で失敗させる。
+import sys, json, re, subprocess, os, datetime
+ST=os.environ['MOCK_STATE']
+st=json.load(open(ST))
+args=sys.argv[1:]
+assert args[0]=='api'
+args=args[1:]
+method='GET'; q=None; fields={}; flist=[]; path=None; slurp=False
+i=0
+while i<len(args):
+    a=args[i]
+    if a=='-X': method=args[i+1]; i+=2
+    elif a in('-q','--jq'): q=args[i+1]; i+=2
+    elif a=='-f' or a=='-F':
+        k,v=args[i+1].split('=',1)
+        if k.endswith('[]'): flist.append(v)
+        else: fields[k]=v
+        i+=2
+    elif a=='--paginate': i+=1
+    elif a=='-H': i+=2
+    elif a=='--slurp': slurp=True; i+=1
+    elif a.startswith('-'): i+=1
+    else: path=a; i+=1
+if fields or flist:
+    if method=='GET': method='POST'
+path=re.sub(r'^repos/[^/]+/[^/]+/','',path)
+now=st.get('now', datetime.datetime.utcnow().isoformat()+'Z')
+def out(obj):
+    if q:
+        r=subprocess.run(['jq','-r',q],input=json.dumps(obj),capture_output=True,text=True)
+        sys.stdout.write(r.stdout)
+        if r.returncode: sys.stderr.write(r.stderr); sys.exit(1)
+    else:
+        print(json.dumps(obj))
+def save(): json.dump(st,open(ST,'w'))
+base=path.split('?')[0]
+if re.match(r'repos/[^/]+/[^/]+$',base): out({'is_template':st.get('is_template',False)}); sys.exit(0)
+m=re.match(r'issues/(\d+)/comments$',base)
+if m:
+    n=m.group(1)
+    if method=='POST':
+        st['next_id']+=1
+        c={'id':st['next_id'],'body':fields['body'],'user':{'login':'github-actions[bot]'},'created_at':now,'updated_at':now,'issue':n}
+        st['comments'].append(c); save(); print('{}'); sys.exit(0)
+    cs=[c for c in st['comments'] if c['issue']==n]
+    out([cs] if slurp else cs); sys.exit(0)
+m=re.match(r'issues/comments/(\d+)$',base)
+if m and method=='PATCH':
+    for c in st['comments']:
+        if c['id']==int(m.group(1)): c['body']=fields['body']; c['updated_at']=now
+    save(); print('{}'); sys.exit(0)
+m=re.match(r'issues/(\d+)/labels$',base)
+if m:
+    n=m.group(1); L=st['labels'].setdefault(n,[])
+    if method=='POST':
+        for l in flist:
+            if l not in L: L.append(l)
+        save(); print('[]'); sys.exit(0)
+    out([{'name':l} for l in L]); sys.exit(0)
+m=re.match(r'issues/(\d+)/labels/(.+)$',base)
+if m and method=='DELETE':
+    from urllib.parse import unquote
+    n=m.group(1); l=unquote(m.group(2)); L=st['labels'].setdefault(n,[])
+    # 本物と同じく、付いていないラベルを外そうとしたら失敗（404）
+    if l not in L: sys.stderr.write('HTTP 404: Label does not exist\n'); sys.exit(1)
+    L.remove(l)
+    save(); sys.exit(0)
+m=re.match(r'issues/(\d+)$',base)
+if m:
+    n=m.group(1); meta=st.setdefault('issues_meta',{}).setdefault(n,{})
+    if method=='PATCH':
+        meta.update({k:v for k,v in fields.items() if k in('state','title')}); save(); print('{}'); sys.exit(0)
+    out({'title':meta.get('title','タイトル'+n),'state':meta.get('state','open'),'user':{'login':st.get('authors',{}).get(n,'o')},'updated_at':st['issue_updated'].get(n,now)}); sys.exit(0)
+if base=='issues' and method=='POST':
+    meta=st.setdefault('issues_meta',{})
+    num=str(max([int(k) for k in list(st['labels'])+list(meta)]+[100])+1)
+    meta[num]={'title':fields.get('title',''),'state':'open'}
+    st['labels'][num]=list(flist); save(); out({'number':int(num)}); sys.exit(0)
+if base=='issues':
+    lab=re.search(r'labels=([^&]+)',path); 
+    from urllib.parse import unquote
+    lab=unquote(lab.group(1)) if lab else None
+    stm=re.search(r'state=([a-z]+)',path); want=stm.group(1) if stm else 'open'
+    meta=st.get('issues_meta',{})
+    res=[{'number':int(n),'title':meta.get(n,{}).get('title','t'),'state':meta.get(n,{}).get('state','open'),'updated_at':st['issue_updated'].get(n,now),'labels':[{'name':x} for x in L],'closed_at':meta.get(n,{}).get('closed_at')} for n,L in st['labels'].items() if (lab is None or lab in L) and (want=='all' or meta.get(n,{}).get('state','open')==want)]
+    out(res); sys.exit(0)
+m=re.match(r'pulls/(\d+)/comments$',base)
+if m:
+    rc=st.get('review_comments',[])
+    out([rc] if slurp else rc); sys.exit(0)
+m=re.match(r'pulls/(\d+)/files$',base)
+# 文字列は普通の（文字の差分がある）ファイル。dict はそのまま（画像など patch の無いファイルを表すのに使う）
+if m: out([f if isinstance(f,dict) else {'filename':f,'patch':'@@ -1 +1 @@','changes':1} for f in st.get('files',[])]); sys.exit(0)
+m=re.match(r'contents/(.+)$',base)
+if m and method=='GET':
+    from urllib.parse import unquote
+    ref=re.search(r'ref=([^&]+)',path); ref=ref.group(1) if ref else 'main'
+    body=st.get('contents',{}).get(ref,{}).get(unquote(m.group(1)))
+    if body is None: sys.stderr.write('HTTP 404: Not Found\n'); sys.exit(1)
+    sys.stdout.write(body); sys.exit(0)
+m=re.match(r'pulls/(\d+)/merge$',base)
+# merge_fail があれば、マージを断る（main との衝突などを表す）
+if m and method=='PUT' and st.get('merge_fail'): sys.stderr.write(st['merge_fail']+'\n'); sys.exit(1)
+if m and method=='PUT': st.setdefault('merged',[]).append(int(m.group(1))); save(); print('{}'); sys.exit(0)
+m=re.match(r'pulls/(\d+)$',base)
+if m:
+    for pr in st['pulls']:
+        if pr['number']==int(m.group(1)): out(pr); sys.exit(0)
+m=re.match(r'commits/([^/]+)/check-runs$',base)
+if m: out({'check_runs':st.get('checks',[])}); sys.exit(0)
+if re.match(r'actions/runs/\d+/jobs$',base): out({'jobs':st.get('jobs',[])}); sys.exit(0)
+m=re.match(r'actions/workflows/([^/]+)/runs$',base)
+if m: out({'workflow_runs':st.get('wf_runs',{}).get(m.group(1),[])}); sys.exit(0)
+m=re.match(r'actions/workflows/([^/]+)/dispatches$',base)
+if m and method=='POST':
+    st.setdefault('dispatches',[]).append({'workflow':m.group(1),**fields}); save(); sys.exit(0)
+if base=='actions/runs': out({'workflow_runs':st.get('runs',[])}); sys.exit(0)
+if base.startswith('compare/'): out({'ahead_by':0}); sys.exit(0)
+if re.match(r'commits/[^/]+$',base): out({'commit':{'committer':{'date':'2026-01-01T00:00:00Z'}}}); sys.exit(0)
+if base=='pulls':
+    out(st.get('pulls',[])); sys.exit(0)
+if base=='branches':
+    out([{'name':b['name']} for b in st.get('branches',[])]); sys.exit(0)
+m=re.match(r'branches/(.+)$',base)
+if m:
+    for b in st.get('branches',[]):
+        if b['name']==m.group(1): out({'commit':{'commit':{'committer':{'date':b['date']}}}}); sys.exit(0)
+    sys.stderr.write('branch not found\n'); sys.exit(1)
+m=re.match(r'git/refs/heads/(.+)$',base)
+if m and method=='DELETE':
+    st['branches']=[b for b in st.get('branches',[]) if b['name']!=m.group(1)]; save(); sys.exit(0)
+sys.stderr.write('UNHANDLED %s %s\n'%(method,path)); sys.exit(1)

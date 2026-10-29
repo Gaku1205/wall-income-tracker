@@ -1,0 +1,196 @@
+# 工場：ai-dev-template に「新サービス：〜」で始まるIssueを1行書くと、新しいサービスのリポジトリを作って、いつものパイプラインに渡す。
+#   例：「新サービス：毎朝の天気と予定を1枚で見られるページ」
+# 名前・言語（Next.js か Python）・1行の説明だけをAIが決め、あとは factory.sh が行う（リポジトリ作成・秘密と変数のコピー・
+# Vercel・main の保護・最初のIssue）。最初の1回だけ、Environment「factory」に FACTORY_TOKEN（と、Next.js を公開するなら VERCEL_TOKEN）の登録が要る（docs/pipeline.md「工場」）。
+# テンプレート本体でだけ、オーナーが書いたIssueでだけ動く（公開リポジトリなので、ほかの人のIssueでは動かない）。
+name: Factory
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  plan:
+    if: >-
+      github.event.repository.is_template &&
+      github.event.issue.user.login == github.repository_owner &&
+      (startsWith(github.event.issue.title, '新サービス：') || startsWith(github.event.issue.title, '新サービス:'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
+    outputs:
+      name: ${{ steps.check.outputs.name }}
+      stack: ${{ steps.check.outputs.stack }}
+      desc: ${{ steps.check.outputs.desc }}
+      memo: ${{ steps.check.outputs.memo }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - name: メモを取り出す
+        id: memo
+        env:
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          memo="${TITLE#新サービス：}"; memo="${memo#新サービス:}"; memo="$(printf '%s' "$memo" | sed 's/^[[:space:]]*//')"
+          { echo 'memo<<MEMO_END'; printf '%s\n' "$memo"; echo 'MEMO_END'; } >> "$GITHUB_OUTPUT"
+      # AIは名前・言語・説明を決めて、ファイルに書くだけ（ほかの操作は許さない。鍵も渡さない）
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        continue-on-error: true
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            オーナーが、新しく作りたいサービスを1行のメモに書きました。
+            メモ：${{ steps.memo.outputs.memo }}
+
+            このサービスのリポジトリを作るために、次の3つを決め、`factory-plan.json` に JSON で書いてください（ほかのファイルは作らない）。
+            {"name": "...", "stack": "...", "description": "..."}
+            - name：リポジトリの名前。中身が分かる短い英語を、小文字の英数字と - でつなぐ（3〜39文字、先頭は英字。例：morning-board、receipt-sorter）
+            - stack：nextjs か python
+              - 人が画面で使うWebのサービス（ページ・ダッシュボード・ツール）なら nextjs
+              - 画面よりも処理が中心の物（API・データ処理・機械学習・定期的に動く処理）なら python
+              - 迷ったら nextjs
+            - description：何のサービスかを、日本語で1文（120文字以内。改行・バッククォートは使わない）
+          claude_args: '--model sonnet --max-turns 5 --allowedTools "Write"'
+      - name: AIが決めた物を確かめる
+        id: check
+        env:
+          MEMO: ${{ steps.memo.outputs.memo }}
+        run: |
+          f=factory-plan.json
+          if [ ! -f "$f" ] || [ -L "$f" ] || ! jq -e 'type == "object"' "$f" > /dev/null 2>&1; then
+            echo "::error::AIが factory-plan.json を書きませんでした"; exit 1
+          fi
+          name=$(jq -r '.name // ""' "$f"); stack=$(jq -r '.stack // ""' "$f"); desc=$(jq -r '.description // ""' "$f" | tr -d '\n`')
+          [[ "$name" =~ ^[a-z][a-z0-9-]{2,38}$ ]] || { echo "::error::名前「$name」の形が違います"; exit 1; }
+          case "$stack" in nextjs | python) ;; *) echo "::error::言語「$stack」は nextjs か python"; exit 1 ;; esac
+          [ -n "$desc" ] || { echo "::error::説明がありません"; exit 1; }
+          desc="${desc:0:120}"
+          echo "名前：$name／言語：$stack／説明：$desc"
+          { echo "name=$name"; echo "stack=$stack"; echo "desc<<DESC_END"; echo "$desc"; echo "DESC_END";
+            echo "memo<<MEMO_END"; printf '%s\n' "$MEMO"; echo "MEMO_END"; } >> "$GITHUB_OUTPUT"
+
+  # 見た目の段（Next.js のときだけ）：強いモデルが、オーナーの見た目の基準（.github/factory/design-guide.md）を読んで、
+  # このサービスだけのデザイン仕様（docs/design.md）を書く。実装AIは、この仕様どおりに最初の画面を作る。
+  # AIはファイルを書くだけ（鍵は持たない）。書いた物は build ジョブが形を確かめてから使う
+  design:
+    needs: plan
+    if: needs.plan.outputs.stack == 'nextjs'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        continue-on-error: true
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたはトップクラスのプロダクトデザイナーです。新しく作るWebサービスの、デザイン仕様を書いてください。
+            - サービス名：${{ needs.plan.outputs.name }}
+            - 説明：${{ needs.plan.outputs.desc }}
+            - 元のメモ：${{ needs.plan.outputs.memo }}
+
+            手順：
+            1. `.github/factory/design-guide.md`（オーナーの見た目の基準と、実際の判定）を全部読む
+            2. `docs/design.md`（今の雛形。書き方の形）を読む
+            3. `factory-design.md` に、このサービスのデザイン仕様を書く（ほかのファイルは作らない）。中身：
+               - 1行目は `# デザイン仕様`
+               - 体験の核（最初の5秒で何を感じさせるか。動きと手触りで1文）
+               - 構図（PCとスマホ。何をどこに置くか。PCは 1024〜2560 の幅で崩れない割り方、スマホは最初の1画面に主役が入る）
+               - 色（4〜6色に名前と値と用途。表で）、文字（Google Fonts にある書体で、見出しと本文の2役。大きさの段）
+               - 動き（何が・いつ・何秒で・どんな曲線で。生きている映像は1か所だけ。canvas か WebGL で作れる物）
+               - 部品（ボタン・入力欄など、標準の部品をそのまま並べない作り方）と、画面の文言（短く、日本語）
+               - 避けること（基準の「AIが作った感の正体」から、このサービスで特に気をつける物）
+               誰が読んでも同じ画面が作れる具体さで書く。依存パッケージを増やさずに、Next.js と素の CSS・canvas・WebGL で作れる物にする。
+               構図・色・動きは、このサービスの題材から決める（ほかのサービスと同じ見た目にしない）
+          claude_args: '--model opus --max-turns 15 --allowedTools "Read,Write"'
+      - name: 書いた物を取っておく
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/design"
+          if [ -f factory-design.md ] && [ ! -L factory-design.md ]; then cp factory-design.md "$RUNNER_TEMP/design/design.md"; fi
+          touch "$RUNNER_TEMP/design/.keep"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: factory-design
+          path: ${{ runner.temp }}/design
+          include-hidden-files: true
+          retention-days: 3
+
+  build:
+    # 安全のため別のジョブにする：強い鍵（FACTORY_TOKEN）は、AIが動いたジョブには渡さない。スクリプトは main の物を動かす。
+    # 強い鍵は Environment「factory」（main からだけ使える）に置く。AIが作ったブランチのワークフローからは読めない
+    needs: [plan, design]
+    # 見た目の段が飛ばされた（Python）・失敗した（雛形のまま進める）ときも作る
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    environment: factory
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        if: needs.design.result == 'success'
+        continue-on-error: true
+        with:
+          name: factory-design
+          path: ${{ runner.temp }}/design
+      - name: 鍵があるか確かめる
+        env:
+          HAS_FACTORY: ${{ secrets.FACTORY_TOKEN != '' }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          if [ "$HAS_FACTORY" != true ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -f body="⚠️ 新しいサービスを作るには、最初の1回だけ、Environment「factory」の Secret に FACTORY_TOKEN が要ります（作り方は docs/pipeline.md の「工場」）。登録したら、このIssueを閉じて、同じ1行でもう一度作ってください。" > /dev/null
+            echo "::error::FACTORY_TOKEN がありません"; exit 1
+          fi
+      - name: 新しいサービスを作る
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_TOKEN }}
+          COMMENT_TOKEN: ${{ github.token }}
+          TEMPLATE: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          MEMO: ${{ needs.plan.outputs.memo }}
+          APP_NAME: ${{ needs.plan.outputs.name }}
+          APP_STACK: ${{ needs.plan.outputs.stack }}
+          APP_DESC: ${{ needs.plan.outputs.desc }}
+          S_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          S_PIPELINE_APP_PRIVATE_KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+          S_PIPELINE_TOKEN: ${{ secrets.PIPELINE_TOKEN }}
+          S_NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          V_PIPELINE_APP_ID: ${{ vars.PIPELINE_APP_ID }}
+          V_NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+          V_AGENT_DESK_URL: ${{ vars.AGENT_DESK_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+          DESIGN_FILE: ${{ runner.temp }}/design/design.md
+        run: .github/scripts/factory.sh
+
+  # AIが名前を決められなかったときも、黙って終わらない
+  report-plan-failure:
+    needs: plan
+    if: failure() && needs.plan.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -f body="⚠️ 新しいサービスの名前と言語を、AIが決められませんでした（Actions の Factory の実行を見てください）。このIssueを閉じて、同じ1行でもう一度作れます。" > /dev/null

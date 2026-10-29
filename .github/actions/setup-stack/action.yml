@@ -1,0 +1,81 @@
+# 実行環境をそろえる：リポジトリ直下の pipeline.json（無ければ今までの Next.js）に合わせて、
+# 言語の実行環境（Node・Python・Go・Java・.NET）と依存を入れる。CI・実装AI・修正AI・公開で共通に使う。
+# 先に actions/checkout が要る。
+name: 実行環境をそろえる
+description: pipeline.json に合わせて、言語の実行環境と依存を入れる
+inputs:
+  dir:
+    description: pipeline.json のあるフォルダ（既定はリポジトリのルート）
+    default: "."
+  install:
+    description: 依存を入れるコマンド（pipeline.json の setup）も動かすか
+    default: "true"
+outputs:
+  allowed:
+    description: AIに許す確認コマンド（Bash(...),Bash(...)）
+    value: ${{ steps.read.outputs.allowed }}
+  node:
+    description: 入れた Node の版（入れていなければ空）
+    value: ${{ steps.read.outputs.node }}
+runs:
+  using: composite
+  steps:
+    - name: 設定を読む
+      id: read
+      shell: bash
+      working-directory: ${{ inputs.dir }}
+      run: |
+        # Windows（Git Bash）では D:\a\... の形なので、bash の形に直してから読む
+        here="$GITHUB_ACTION_PATH"; command -v cygpath > /dev/null && here=$(cygpath -u "$here")
+        source "$here/../../scripts/stack.sh"
+        errs=$(stack_validate)
+        if [ -n "$errs" ]; then
+          while IFS= read -r e; do echo "::error title=pipeline.json::$e"; done <<< "$errs"
+          exit 1
+        fi
+        [ -f "$STACK_FILE" ] && echo "pipeline.json を使います" || echo "pipeline.json が無いので、Next.js（Node 22・npm）として動きます"
+        while IFS=$'\t' read -r name ver; do
+          [ -n "$name" ] && echo "${name}=${ver}" >> "$GITHUB_OUTPUT" && echo "実行環境：${name} ${ver}"
+        done < <(stack_tools)
+        echo "allowed=$(stack_allowed_tools)" >> "$GITHUB_OUTPUT"
+    - if: steps.read.outputs.node != ''
+      uses: actions/setup-node@v5
+      with:
+        node-version: ${{ steps.read.outputs.node }}
+        cache: ${{ hashFiles(format('{0}/package-lock.json', inputs.dir)) != '' && 'npm' || '' }}
+        cache-dependency-path: ${{ inputs.dir }}/package-lock.json
+    - if: steps.read.outputs.python != ''
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ steps.read.outputs.python }}
+        cache: ${{ hashFiles(format('{0}/requirements*.txt', inputs.dir), format('{0}/pyproject.toml', inputs.dir)) != '' && 'pip' || '' }}
+        cache-dependency-path: |
+          ${{ inputs.dir }}/requirements*.txt
+          ${{ inputs.dir }}/pyproject.toml
+    - if: steps.read.outputs.go != ''
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ steps.read.outputs.go }}
+    - if: steps.read.outputs.java != ''
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ steps.read.outputs.java }}
+    - if: steps.read.outputs.dotnet != ''
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ steps.read.outputs.dotnet }}
+    - name: 依存を入れる
+      if: inputs.install == 'true'
+      shell: bash
+      working-directory: ${{ inputs.dir }}
+      run: |
+        # Windows（Git Bash）では D:\a\... の形なので、bash の形に直してから読む
+        here="$GITHUB_ACTION_PATH"; command -v cygpath > /dev/null && here=$(cygpath -u "$here")
+        source "$here/../../scripts/stack.sh"
+        while IFS= read -r cmd; do
+          [ -z "$cmd" ] && continue
+          echo "::group::$cmd"
+          bash -eo pipefail -c "$cmd"
+          echo "::endgroup::"
+        done < <(stack_setup)

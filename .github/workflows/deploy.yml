@@ -1,0 +1,217 @@
+# 公開：main の CI が通ったら、pipeline.json の deploy に書いた公開先へ出す（docs/pipeline.md「言語と公開先」）。
+#   aws-apprunner   Docker のイメージを作り、AWS App Runner で動かす（Web・API。言語を選ばない）
+#   github-release  OS ごとに配布物（exe など）を作り、GitHub Releases に置く（外部のアカウント不要）
+#   expo            スマホアプリを Expo（EAS）で配る
+#   vercel          ここでは何もしない（Vercel が自分で公開する。pipeline.json が無いときの既定）
+# 結果はコミットの状態（deploy/<種類>）に書き、スマホに通知する。パイプラインの更新だけのコミットは公開しない。
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    # main への push で CI が通ったときだけ（PR の CI では動かない）。テンプレート（本体）では動かさない
+    if: >-
+      !github.event.repository.is_template &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      apprunner: ${{ steps.plan.outputs.apprunner }}
+      apprunner_config: ${{ steps.plan.outputs.apprunner_config }}
+      release: ${{ steps.plan.outputs.release }}
+      release_config: ${{ steps.plan.outputs.release_config }}
+      release_os: ${{ steps.plan.outputs.release_os }}
+      expo: ${{ steps.plan.outputs.expo }}
+      expo_config: ${{ steps.plan.outputs.expo_config }}
+    steps:
+      - id: sha
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          # CI が通った版そのものを公開する。直前のコミットと比べるので2つ取る
+          ref: ${{ steps.sha.outputs.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - id: plan
+        run: .github/scripts/deploy-plan.sh
+
+  apprunner:
+    needs: plan
+    if: needs.plan.outputs.apprunner == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: write
+      # AWS の鍵を置かず、GitHub の OIDC で AWS の役割を一時的に借りる
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - run: .github/scripts/deploy-status.sh aws-apprunner pending "AWS App Runner に公開中"
+      - name: AWS の設定があるか
+        id: vars
+        env:
+          ROLE: ${{ vars.AWS_ROLE_ARN }}
+          REGION: ${{ vars.AWS_REGION }}
+          ACCESS: ${{ vars.AWS_APPRUNNER_ACCESS_ROLE_ARN }}
+        run: |
+          missing=""
+          [ -n "$ROLE" ] || missing="$missing AWS_ROLE_ARN"
+          [ -n "$REGION" ] || missing="$missing AWS_REGION"
+          [ -n "$ACCESS" ] || missing="$missing AWS_APPRUNNER_ACCESS_ROLE_ARN"
+          if [ -n "$missing" ]; then
+            echo "::error::Actions の Variable が無い：${missing}（docs/pipeline.md「AWS App Runner」の手順）"
+            .github/scripts/deploy-status.sh aws-apprunner error "AWS の設定がまだです（Variable：${missing# }）"
+            exit 1
+          fi
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: App Runner に公開する
+        id: deploy
+        env:
+          CONFIG: ${{ needs.plan.outputs.apprunner_config }}
+          ACCESS_ROLE_ARN: ${{ vars.AWS_APPRUNNER_ACCESS_ROLE_ARN }}
+        run: .github/scripts/deploy-apprunner.sh
+      - if: success()
+        run: .github/scripts/deploy-status.sh aws-apprunner success "AWS App Runner に公開しました" "${{ steps.deploy.outputs.url }}"
+      # 設定が無いとき（上で書いた）以外の失敗：役割を借りられない・イメージが作れない・App Runner の失敗など
+      - if: failure() && steps.vars.outcome == 'success'
+        run: .github/scripts/deploy-status.sh aws-apprunner failure "App Runner への公開が失敗しました（ログを見てください）" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  release-build:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.plan.outputs.release_os) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: 実行環境をそろえる
+        uses: ./.github/actions/setup-stack
+      - name: 配布物を作る
+        shell: bash
+        env:
+          CONFIG: ${{ needs.plan.outputs.release_config }}
+        run: |
+          build=$(jq -r '.build' <<< "$CONFIG")
+          echo "作る：$build"
+          bash -eo pipefail -c "$build"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.os }}
+          path: ${{ fromJSON(needs.plan.outputs.release_config).files }}
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    needs: [plan, release-build]
+    if: ${{ !cancelled() && needs.plan.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: 作れなかった OS があれば失敗にする
+        if: needs.release-build.result != 'success'
+        run: |
+          .github/scripts/deploy-status.sh github-release failure "配布物を作れませんでした（どれかの OS で失敗）" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-all
+          pattern: build-*
+      - name: GitHub Releases に置く
+        id: rel
+        run: .github/scripts/deploy-release.sh dist-all
+      - if: success()
+        run: .github/scripts/deploy-status.sh github-release success "GitHub Releases に置きました" "${{ steps.rel.outputs.url }}"
+      - if: failure() && needs.release-build.result == 'success'
+        run: .github/scripts/deploy-status.sh github-release failure "GitHub Releases に置けませんでした" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  expo:
+    needs: plan
+    if: needs.plan.outputs.expo == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: Expo の鍵があるか
+        id: token
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::Secret の EXPO_TOKEN が無い（docs/pipeline.md「Expo」の手順）"
+            .github/scripts/deploy-status.sh expo error "Expo の設定がまだです（Secret：EXPO_TOKEN）"
+            exit 1
+          fi
+          .github/scripts/deploy-status.sh expo pending "Expo で配布中"
+      - name: 実行環境をそろえる
+        uses: ./.github/actions/setup-stack
+      - name: Expo で配る
+        id: eas
+        env:
+          CONFIG: ${{ needs.plan.outputs.expo_config }}
+        run: |
+          cmd=$(jq -r '.command // "npx --yes eas-cli@latest update --auto --non-interactive"' <<< "$CONFIG")
+          echo "配る：$cmd"
+          bash -eo pipefail -c "$cmd"
+      - if: success()
+        run: .github/scripts/deploy-status.sh expo success "Expo で配りました" "https://expo.dev"
+      - if: failure() && steps.token.outcome == 'success'
+        run: .github/scripts/deploy-status.sh expo failure "Expo での配布が失敗しました" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

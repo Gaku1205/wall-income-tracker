@@ -1,0 +1,34 @@
+# 本番に公開されたら（失敗したら）スマホに通知する。
+# Vercel は公開の結果を main のコミットのステータスに書くので、それを見る。
+name: Deploy Notify
+
+on:
+  status:
+
+jobs:
+  notify:
+    if: >-
+      startsWith(github.event.context, 'Vercel') &&
+      github.event.state != 'pending' &&
+      contains(github.event.branches.*.name, 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+          AGENT_DESK_URL: ${{ vars.AGENT_DESK_URL }}
+          STATE: ${{ github.event.state }}
+          MESSAGE: ${{ github.event.commit.commit.message }}
+        run: |
+          # マージコミットの説明（2行目以降）にPRのタイトルが入っている
+          title=$(printf '%s\n' "$MESSAGE" | sed -n '3p')
+          [ -z "$title" ] && title=$(printf '%s\n' "$MESSAGE" | head -n 1)
+          if [ "$STATE" = "success" ]; then
+            .github/scripts/notify.sh deployed "公開されました" "$title" 3
+          else
+            .github/scripts/notify.sh deploy_failed "公開に失敗しました" "$title：Vercelを確認してください" 5
+          fi

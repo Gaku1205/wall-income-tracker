@@ -1,0 +1,11 @@
+name: メモ（AIにおまかせ）
+description: やりたいことを1行で書くだけ。企画AIが清書して、実装からマージ・公開まで自動で進める
+labels: ["ai:plan"]
+body:
+  - type: textarea
+    id: memo
+    attributes:
+      label: やりたいこと
+      description: 思いついたままでOK。例「スマホで改行が変」「完了したタスクを下に並べたい」
+    validations:
+      required: true

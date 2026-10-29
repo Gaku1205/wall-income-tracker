@@ -1,0 +1,121 @@
+# AWS App Runner に公開するための、AWS 側の準備（1つの AWS アカウントで1回だけ）。
+# AWS の画面 → CloudFormation → スタックの作成 → このファイルをアップロード で作る（docs/pipeline.md「AWS App Runner」）。
+# できる物：
+#   - GitHub の OIDC の受け口（アカウントに1つ。もうあれば CreateOidcProvider を false）
+#   - GitHub Actions が借りる役割（鍵を置かずに公開できる。指定したオーナーのリポジトリの main からだけ借りられる）
+#   - App Runner が ECR からイメージを読むための役割
+# 出力の3つを、リポジトリの Settings → Secrets and variables → Actions → Variables に入れる。
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ai-dev-template から AWS App Runner に公開するための役割
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: Gaku1205
+    Description: GitHub のユーザー名（このユーザーのリポジトリの main からだけ公開できる）
+  RepositoryPattern:
+    Type: String
+    Default: "*"
+    Description: 公開してよいリポジトリ名（* で全部。1つに絞るならリポジトリ名）
+  CreateOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: GitHub の OIDC の受け口を作るか（このアカウントにもう token.actions.githubusercontent.com があれば false）
+
+Conditions:
+  MakeProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Assumed by GitHub Actions (deploy.yml) to deploy to App Runner
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # main からの実行だけ（PR や別のブランチからは借りられない）
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${RepositoryPattern}:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy-apprunner
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPush
+                Effect: Allow
+                Action:
+                  - ecr:CreateRepository
+                  - ecr:DescribeRepositories
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !Sub arn:${AWS::Partition}:ecr:*:${AWS::AccountId}:repository/*
+              - Sid: AppRunner
+                Effect: Allow
+                Action:
+                  - apprunner:CreateService
+                  - apprunner:UpdateService
+                  - apprunner:DescribeService
+                  - apprunner:ListServices
+                  - apprunner:ListOperations
+                Resource: "*"
+              - Sid: PassAccessRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt AccessRole.Arn
+              - Sid: AppRunnerServiceLinkedRole
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName: apprunner.amazonaws.com
+
+  AccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Lets App Runner pull images from ECR
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: build.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+Outputs:
+  AwsRoleArn:
+    Description: Variable の AWS_ROLE_ARN に入れる
+    Value: !GetAtt DeployRole.Arn
+  AwsAppRunnerAccessRoleArn:
+    Description: Variable の AWS_APPRUNNER_ACCESS_ROLE_ARN に入れる
+    Value: !GetAtt AccessRole.Arn
+  AwsRegion:
+    Description: Variable の AWS_REGION に入れる
+    Value: !Ref AWS::Region

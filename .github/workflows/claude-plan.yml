@@ -1,0 +1,176 @@
+# 企画AI：Issueに「ai:plan」ラベルを付けると、短いメモを実装AIが作業できるIssueに清書する。
+# 清書できたら ai:implement を付けて実装に回す（全自動）。意図が読み取れなければ質問して止まる。
+# 進行中の作業とぶつかるかも企画AIが判断し、ぶつかるなら順番待ち（ai:queue）、別の場所なら並列で始める。
+name: Claude Plan
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  plan:
+    if: github.event.label.name == 'ai:plan'
+    runs-on: ubuntu-latest
+    outputs:
+      outcome: ${{ steps.claude.outcome }}
+    timeout-minutes: 15
+    concurrency:
+      group: claude-plan-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      # パイプラインの App（ボット）がラベル・コメントで起こした実行を、AIのアクションが断らないようにする。
+      # AI自身（claude[bot]）は許さない（自分のコメントで自分を呼ぶ繰り返しを防ぐ）。Secret は使わない
+      - name: 起こしたボットを許可に入れる
+        id: bots
+        env:
+          SENDER: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+        run: |
+          list=""
+          if [ "$SENDER_TYPE" = Bot ] && [ "$SENDER" != "claude[bot]" ]; then
+            list="${SENDER},${SENDER%\[bot\]}"
+          fi
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          allowed_bots: ${{ steps.bots.outputs.list }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたはこのリポジトリ（${{ github.repository }}）の企画担当です。
+            Issue #${{ github.event.issue.number }} は、オーナーがスマホで書いた短いメモです。これを、実装AIがそのまま作業できるIssueに清書してください。
+
+            手順：
+            1. `gh issue view ${{ github.event.issue.number }} --comments` でメモとコメントを読む
+            2. CLAUDE.md と、あれば docs/ 以下の仕様書を読み、関係するコードを確認する
+            3. タイトルと本文を書き直し、`gh issue edit ${{ github.event.issue.number }} --title "..." --body-file <ファイル>` で更新する
+            4. `gh issue list --state open --label ai:implement` と `gh pr list --state open` で、いま進行中の作業を見る。
+               それぞれのIssue・PRの中身（`gh issue view` / `gh pr diff`）と見比べて、このIssueと同時に作業してよいかを決める
+               - 同じファイルを書き換えそう、同じ機能や画面の同じ場所を触る、前の作業の結果を使う → 待つ（WAIT）
+               - 触る場所がはっきり別で、どちらが先にマージされても困らない → 並列（PARALLEL）
+               - 迷ったら待つ
+            5. 最後に、作業フォルダ直下のファイル `plan-result.txt` に2行だけを書く
+               1行目は次のどれか
+               - `READY size:S`：文言や見た目の小さい修正
+               - `READY`：普通の大きさ
+               - `READY size:L`：設計が絡む大きい作業
+               - `QUESTION`：**人間にしかできない作業が必須のときだけ**（依存パッケージの追加、`.github/`・`docs/`・CLAUDE.md の変更、秘密情報の登録、外部サービスの契約や設定）。ただし、CLAUDE.md が「触ってよい」と書いている場所（例：ai-dev-template 自身の `.github/scripts/` と `docs/pipeline.md`）の変更は、人間の作業ではない。そのときは `READY` にする。このときは本文を書き直さず、`gh issue comment` で、人間に何をしてほしいかを書く。コメントの1行目は `<!-- human-request -->` だけにし（ダッシュボードがこの印で見つけて「あなたの番」に出す）、2行目に、してほしいことを1文で書く（例：「`zod` を依存に足してください。入力の検証に使います」）。詳しい説明はその下に書く
+               - 意図が読み取れなくても、質問で止まらない。いちばん無難な解釈で `READY` にして、本文に「### 仮定」を書く（下）
+               2行目は `PARALLEL` か `WAIT`（進行中の作業が無ければ `PARALLEL`）。WAIT のときは、どの作業とぶつかるかを Issue に `gh issue comment` で1行書く。書き出しは「順番待ちの理由：」にし、「前の作業が終わると自動で始まります」で終える（実装AIへの指示にならないようにする）
+
+            本文の形（日本語）：
+            ### 背景
+            （なぜやるか。オーナーのメモの意図）
+            ### やること
+            （箇条書き。触るファイルや関数の見当があれば書く）
+            ### 受け入れ条件
+            - [ ] （確かめられる条件を箇条書き）
+            - [ ] 確認コマンド（pipeline.json の checks。無ければ型チェック・リント・テスト・ビルド）が全部通る
+            ### やらないこと
+            （紛らわしい周辺の作業）
+            ### 仮定
+            （メモから読み取れなくて、あなたが決めた内容を箇条書き。無ければこの見出しごと書かない。違うときはオーナーがコメントで直す）
+            > 元のメモ：（オーナーのメモをそのまま）
+
+            守ること：
+            - メモの意図を変えない。メモに無い機能を足さない。1つのPRで終わる大きさにする
+            - 1つのPRに収まらない大きさなら、いちばん最初に作る分（それだけで動く最小のまとまり）だけをこのIssueにして `READY`。残りは、新しいIssueとして `gh issue create --title "..." --body-file <ファイル>` で作る（本文は上の形。ラベルは付けない。自動で企画に回る）。このIssueの「やらないこと」に、新しいIssueの番号を書く
+            - 仕様書と食い違うときは、背景に「docs/○○ の△△と違う」と書く
+            - 見た目や挙動を新しく決める・変える作業なら、「やること」の最初に「`docs/spec.md`・`docs/design.md` に○○を書く（そのあと実装する）」を入れる。デザインが決まっていない新しい見た目は、人間に聞かずに既存のルールに合わせて決める前提で、「仮定」に書く
+            - コードは変更しない。Issueの更新とコメントだけをする
+          claude_args: '--model sonnet --max-turns 30 --allowedTools "Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*),Bash(gh pr diff:*),Read,Glob,Grep,Write"'
+      # AIの結果（実行記録・plan-result.txt）を、データとして次のジョブに渡す。ここでは Secret を使わない
+      - name: AIの結果を取っておく
+        if: ${{ !cancelled() }}
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/ai-result"
+          if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then cp "$EXECUTION_FILE" "$RUNNER_TEMP/ai-result/execution.json"; fi
+          if [ -f plan-result.txt ] && [ ! -L plan-result.txt ]; then cp plan-result.txt "$RUNNER_TEMP/ai-result/plan-result.txt"; fi
+          touch "$RUNNER_TEMP/ai-result/.keep"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: ai-result
+          path: ${{ runner.temp }}/ai-result
+          include-hidden-files: true
+          retention-days: 3
+
+  after-plan:
+    # 安全のため別のジョブにする：AIが作業フォルダのスクリプトを書き換えても、ここでは main の版を動かす。
+    # PIPELINE_TOKEN を使うのはこのジョブだけ（AIのジョブには渡さない）
+    needs: plan
+    # AIのジョブが動いたときだけ（別のラベルが付いたときなど、AIのジョブが飛ばされたら何もしない）
+    if: ${{ !cancelled() && needs.plan.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # 秘密鍵を PKCS#8 にそろえる（create-github-app-token は Node 24 だと「BEGIN RSA PRIVATE KEY」の形式を読めず Invalid keyData になる）
+      - name: パイプラインの鍵の秘密鍵をそろえる
+        id: app-key
+        if: vars.PIPELINE_APP_ID != ''
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+        run: |
+          # 貼るときに改行が消えて1行になっていても、頭と終わりの行と中身から組み立て直す
+          k=$(printf '%s' "$KEY" | tr -d '\r'); k=${k//\\n/$'\n'}
+          type=$(printf '%s' "$k" | grep -oE 'BEGIN [A-Z ]*PRIVATE KEY' | head -1 | sed 's/^BEGIN //')
+          # 頭と終わりの行が抜けていたら、GitHub App の鍵の形式（RSA）とみなす
+          [ -n "$type" ] || type="RSA PRIVATE KEY"
+          body=$(printf '%s' "$k" | sed -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----//' -e 's/-----END [A-Z ]*PRIVATE KEY-----//' | tr -d ' \n\t"')
+          pem=$(printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$type" "$(printf '%s' "$body" | fold -w 64)" "$type" | openssl pkey 2> /dev/null) \
+            || { b=no; e=no; case "$k" in *"-----BEGIN"*) b=yes;; esac; case "$k" in *"-----END"*) e=yes;; esac
+                 echo "::error::PIPELINE_APP_PRIVATE_KEY を秘密鍵として読めません（.pem の中身を -----BEGIN から -----END まで全部貼る）。手がかり：全体 ${#KEY} 文字・$(printf '%s\n' "$KEY" | wc -l) 行・BEGIN の行 $b・END の行 $e・中身 ${#body} 文字（2048ビットの鍵なら中身は約1,600文字）"; exit 1; }
+          while IFS= read -r line; do [ -n "$line" ] && echo "::add-mask::$line"; done <<< "$pem"
+          { echo 'pem<<PEM_END'; echo "$pem"; echo 'PEM_END'; } >> "$GITHUB_OUTPUT"
+      # パイプラインの鍵：GitHub App があれば、その1時間だけの鍵を使う（回数制限がオーナーと別・期限切れなし）。無ければ PIPELINE_TOKEN
+      - name: パイプラインの鍵を作る
+        id: app-token
+        if: steps.app-key.outputs.pem != ''
+        # 鍵が作れなくても（秘密鍵の貼り間違いなど）止めずに PIPELINE_TOKEN で続ける。Doctor が ❌ で知らせる
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PIPELINE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.pem }}
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: ai-result
+          path: ${{ runner.temp }}/ai-result
+      - name: plan-result.txt を作業フォルダに置く（中身はデータとしてだけ読む）
+        run: if [ -f "$RUNNER_TEMP/ai-result/plan-result.txt" ]; then cp "$RUNNER_TEMP/ai-result/plan-result.txt" plan-result.txt; fi
+      - name: 次へ進める（実装を依頼する／質問で止まる）
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+          GITHUB_TOKEN_FOR_LABELS: ${{ github.token }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+          AGENT_DESK_URL: ${{ vars.AGENT_DESK_URL }}
+          ISSUE: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          PLAN_OUTCOME: ${{ needs.plan.outputs.outcome }}
+          EXECUTION_FILE: ${{ runner.temp }}/ai-result/execution.json
+        run: .github/scripts/after-plan.sh

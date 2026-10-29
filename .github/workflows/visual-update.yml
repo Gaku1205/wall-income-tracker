@@ -1,0 +1,149 @@
+# 見た目のテストの基準の画像を、CIと同じ環境で撮り直してPRのブランチにコミットする。
+# PRに「visual:update」ラベルを付けると動く（終わるとラベルは外れる）。
+# 文字の描き方はパソコンごとに少し違うので、基準の画像はCIの環境で撮った物にそろえる。
+# 見た目をわざと変えたPRや、初めて基準の画像を作るPRで使う。
+# 安全のため2段に分ける：撮り直し（PRのコードを動かす。Secret を渡さない）→ 画像だけ取り出してコミット（Secret を使う。PRのコードは動かさない）。
+name: Visual Update
+
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  shoot:
+    if: >-
+      github.event.label.name == 'visual:update' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: visual-update-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      # ここではPRのコードを動かすので、Secret は使わず、トークンも残さない
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: 基準の画像を撮り直す
+        # all：差が閾値の中で「通っている」画像も含めて全部撮り直す（変わっていない画像は同じ中身になるので、コミットには出ない）
+        run: npm run test:visual -- --update-snapshots=all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: visual-snapshots
+          path: tests/visual
+          if-no-files-found: error
+          retention-days: 1
+
+  commit:
+    needs: shoot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # 秘密鍵を PKCS#8 にそろえる（create-github-app-token は Node 24 だと「BEGIN RSA PRIVATE KEY」の形式を読めず Invalid keyData になる）
+      - name: パイプラインの鍵の秘密鍵をそろえる
+        id: app-key
+        if: vars.PIPELINE_APP_ID != ''
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+        run: |
+          # 貼るときに改行が消えて1行になっていても、頭と終わりの行と中身から組み立て直す
+          k=$(printf '%s' "$KEY" | tr -d '\r'); k=${k//\\n/$'\n'}
+          type=$(printf '%s' "$k" | grep -oE 'BEGIN [A-Z ]*PRIVATE KEY' | head -1 | sed 's/^BEGIN //')
+          # 頭と終わりの行が抜けていたら、GitHub App の鍵の形式（RSA）とみなす
+          [ -n "$type" ] || type="RSA PRIVATE KEY"
+          body=$(printf '%s' "$k" | sed -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----//' -e 's/-----END [A-Z ]*PRIVATE KEY-----//' | tr -d ' \n\t"')
+          pem=$(printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$type" "$(printf '%s' "$body" | fold -w 64)" "$type" | openssl pkey 2> /dev/null) \
+            || { b=no; e=no; case "$k" in *"-----BEGIN"*) b=yes;; esac; case "$k" in *"-----END"*) e=yes;; esac
+                 echo "::error::PIPELINE_APP_PRIVATE_KEY を秘密鍵として読めません（.pem の中身を -----BEGIN から -----END まで全部貼る）。手がかり：全体 ${#KEY} 文字・$(printf '%s\n' "$KEY" | wc -l) 行・BEGIN の行 $b・END の行 $e・中身 ${#body} 文字（2048ビットの鍵なら中身は約1,600文字）"; exit 1; }
+          while IFS= read -r line; do [ -n "$line" ] && echo "::add-mask::$line"; done <<< "$pem"
+          { echo 'pem<<PEM_END'; echo "$pem"; echo 'PEM_END'; } >> "$GITHUB_OUTPUT"
+      # パイプラインの鍵：GitHub App があれば、その1時間だけの鍵を使う（回数制限がオーナーと別・期限切れなし）。無ければ PIPELINE_TOKEN
+      - name: パイプラインの鍵を作る
+        id: app-token
+        if: steps.app-key.outputs.pem != ''
+        # 鍵が作れなくても（秘密鍵の貼り間違いなど）止めずに PIPELINE_TOKEN で続ける。Doctor が ❌ で知らせる
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PIPELINE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.pem }}
+      # ここではPRのコードを動かさない（npm も実行しない）。画像（png）だけを取り出す
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: visual-snapshots
+          path: ${{ runner.temp }}/snap
+      - name: 変わった画像をコミットする
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          SNAP: ${{ runner.temp }}/snap
+        run: |
+          git config user.name "pipeline"
+          git config user.email "noreply@github.com"
+          (cd "$SNAP" && find . -type f -name '*.png' -print0) | while IFS= read -r -d '' f; do
+            mkdir -p "tests/visual/$(dirname "$f")"
+            cp "$SNAP/$f" "tests/visual/$f"
+          done
+          git add -A tests/visual
+          if git diff --cached --quiet; then
+            echo "基準の画像に変わりはありません"
+          else
+            git commit -m "見た目のテスト：基準の画像をCIの環境で撮り直す"
+            git push origin "HEAD:$BRANCH"
+          fi
+
+  unlabel:
+    needs: [shoot, commit]
+    if: always() && github.event.label.name == 'visual:update' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # 秘密鍵を PKCS#8 にそろえる（create-github-app-token は Node 24 だと「BEGIN RSA PRIVATE KEY」の形式を読めず Invalid keyData になる）
+      - name: パイプラインの鍵の秘密鍵をそろえる
+        id: app-key
+        if: vars.PIPELINE_APP_ID != ''
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+        run: |
+          # 貼るときに改行が消えて1行になっていても、頭と終わりの行と中身から組み立て直す
+          k=$(printf '%s' "$KEY" | tr -d '\r'); k=${k//\\n/$'\n'}
+          type=$(printf '%s' "$k" | grep -oE 'BEGIN [A-Z ]*PRIVATE KEY' | head -1 | sed 's/^BEGIN //')
+          # 頭と終わりの行が抜けていたら、GitHub App の鍵の形式（RSA）とみなす
+          [ -n "$type" ] || type="RSA PRIVATE KEY"
+          body=$(printf '%s' "$k" | sed -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----//' -e 's/-----END [A-Z ]*PRIVATE KEY-----//' | tr -d ' \n\t"')
+          pem=$(printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$type" "$(printf '%s' "$body" | fold -w 64)" "$type" | openssl pkey 2> /dev/null) \
+            || { b=no; e=no; case "$k" in *"-----BEGIN"*) b=yes;; esac; case "$k" in *"-----END"*) e=yes;; esac
+                 echo "::error::PIPELINE_APP_PRIVATE_KEY を秘密鍵として読めません（.pem の中身を -----BEGIN から -----END まで全部貼る）。手がかり：全体 ${#KEY} 文字・$(printf '%s\n' "$KEY" | wc -l) 行・BEGIN の行 $b・END の行 $e・中身 ${#body} 文字（2048ビットの鍵なら中身は約1,600文字）"; exit 1; }
+          while IFS= read -r line; do [ -n "$line" ] && echo "::add-mask::$line"; done <<< "$pem"
+          { echo 'pem<<PEM_END'; echo "$pem"; echo 'PEM_END'; } >> "$GITHUB_OUTPUT"
+      # パイプラインの鍵：GitHub App があれば、その1時間だけの鍵を使う（回数制限がオーナーと別・期限切れなし）。無ければ PIPELINE_TOKEN
+      - name: パイプラインの鍵を作る
+        id: app-token
+        if: steps.app-key.outputs.pem != ''
+        # 鍵が作れなくても（秘密鍵の貼り間違いなど）止めずに PIPELINE_TOKEN で続ける。Doctor が ❌ で知らせる
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PIPELINE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.pem }}
+      - name: ラベルを外す
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR/labels/visual%3Aupdate" > /dev/null || true

@@ -1,0 +1,14 @@
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.spec
+
+# 秘密情報（鍵・環境変数）をコミットしない
+.env
+.env.*
+*.pem
+*.key

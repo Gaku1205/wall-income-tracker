@@ -1,0 +1,19 @@
+# パイプラインで使うラベルを作る（すでにあれば色と説明をそろえる）。
+# テンプレートから作ったリポジトリで、最初に1回 Actions から実行する。
+name: Setup Labels
+
+on:
+  workflow_dispatch:
+
+jobs:
+  labels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: .github/scripts/labels.sh
