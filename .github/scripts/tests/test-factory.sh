@@ -152,11 +152,15 @@ assert_contains "知らない言語" "$(cat "$T/comment.txt")" "nextjs か pytho
 run_factory good-name nextjs 'x $(id)' > /dev/null
 assert_contains "危ない記号" "$(cat "$T/comment.txt")" "記号"
 
-echo "== 見た目の段：形が正しいデザイン仕様は docs/design.md に入る。最初のIssueは size:L"
+echo "== デザイン部門：形が正しいデザイン仕様は docs/design.md に、使う人・場面は仕様書の前提に入る。最初のIssueは size:L"
 { echo "# デザイン仕様"; for i in $(seq 1 60); do echo "- 色や文字の決まり その$i：夜の地に光る数字"; done; } > "$T/design-ok.md"
-run_factory design-ok nextjs "説明" DESIGN_FILE="$T/design-ok.md" > /dev/null
+printf '%s\n' "# 使う人" "- 推定：シフト制のバイトをしている学生" "- 推定：バイト帰りの電車で、スマホを片手に30秒" "前置きの文は入れない" > "$T/context.md"
+run_factory design-ok nextjs "説明" DESIGN_FILE="$T/design-ok.md" CONTEXT_FILE="$T/context.md" > /dev/null
+spec=$(file_in o/design-ok docs/spec.md)
+assert_contains "仕様書の前提に、使う人・場面" "$spec" "  - 推定：バイト帰りの電車で、スマホを片手に30秒"
+assert_not_contains "箇条書き以外は入れない" "$spec" "前置きの文"
 assert_contains "docs/design.md に入る" "$(file_in o/design-ok docs/design.md)" "夜の地に光る数字"
-assert_contains "結果に書く" "$(cat "$T/comment.txt")" "デザイン仕様（docs/design.md）を書いた"
+assert_contains "結果に書く" "$(cat "$T/comment.txt")" "デザイン仕様（docs/design.md）を書き、別の目で検査した"
 assert_contains "最初のIssueは size:L" "$(cat "$T/calls.log")" '"labels[]": "size:L"'
 printf '%s\n' "ちがう見出し" "短い" > "$T/design-bad.md"
 run_factory design-bad nextjs "説明" DESIGN_FILE="$T/design-bad.md" > /dev/null

@@ -132,7 +132,19 @@ PY2
   if [ "$APP_STACK" = python ]; then
     "$HERE/factory-python.sh" . || exit 1
   fi
-  # 見た目の段が書いたデザイン仕様（形が正しいときだけ。だめなら雛形のまま）
+  # デザイン部門が書いた「使う人・使う場面」を、仕様書の「前提」の「使う人：」に入れる（短い箇条書きだけ）
+  if [ -n "${CONTEXT_FILE:-}" ] && [ -f "$CONTEXT_FILE" ] && [ ! -L "$CONTEXT_FILE" ] && [ "$(wc -c < "$CONTEXT_FILE")" -le 2000 ]; then
+    CONTEXT_FILE="$CONTEXT_FILE" python3 - <<'PY3'
+import os
+ctx = [l.rstrip() for l in open(os.environ["CONTEXT_FILE"], encoding="utf-8") if l.strip().startswith(("-", "*"))][:6]
+if ctx:
+    body = "\n".join("  " + l.lstrip().replace("* ", "- ", 1) for l in ctx)
+    s = open("docs/spec.md", encoding="utf-8").read()
+    s = s.replace("- 使う人：\n", "- 使う人・使う場面（デザイン部門の分析。推定を含む）：\n" + body + "\n", 1)
+    open("docs/spec.md", "w", encoding="utf-8").write(s)
+PY3
+  fi
+  # デザイン部門が書いたデザイン仕様（形が正しいときだけ。だめなら雛形のまま）
   if [ -n "${DESIGN_FILE:-}" ] && [ -f "$DESIGN_FILE" ] && [ ! -L "$DESIGN_FILE" ]; then
     size=$(wc -c < "$DESIGN_FILE")
     if [ "$(head -1 "$DESIGN_FILE")" = "# デザイン仕様" ] && [ "$size" -ge 800 ] && [ "$size" -le 60000 ]; then
@@ -152,8 +164,8 @@ PY2
 ) || fail "最初の準備を push できませんでした"
 note "✅ CLAUDE.md・仕様書・README に説明を書いて push した（Bootstrap が動く）"
 case "$(cat "$work/design.flag" 2> /dev/null)" in
-  DESIGN=yes) note "✅ 見た目の段：このサービスのデザイン仕様（docs/design.md）を書いた" ;;
-  DESIGN=bad) note "⚠️ 見た目の段が書いたデザイン仕様の形が違ったので、雛形のままにした" ;;
+  DESIGN=yes) note "✅ デザイン部門：使う場面を分析して、このサービスのデザイン仕様（docs/design.md）を書き、別の目で検査した" ;;
+  DESIGN=bad) note "⚠️ デザイン部門が書いたデザイン仕様の形が違ったので、雛形のままにした" ;;
 esac
 
 # ---- 5. main を守る ----

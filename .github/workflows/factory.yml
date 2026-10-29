@@ -1,6 +1,6 @@
 # 工場：ai-dev-template に「新サービス：〜」で始まるIssueを1行書くと、新しいサービスのリポジトリを作って、いつものパイプラインに渡す。
 #   例：「新サービス：毎朝の天気と予定を1枚で見られるページ」
-# 名前・言語（Next.js か Python）・1行の説明だけをAIが決め、あとは factory.sh が行う（リポジトリ作成・秘密と変数のコピー・
+# 名前・言語（Next.js か Python）・1行の説明をAIが決め、Next.js ならデザイン部門が使う場面の分析からデザイン仕様を書き、あとは factory.sh が行う（リポジトリ作成・秘密と変数のコピー・
 # Vercel・main の保護・最初のIssue）。最初の1回だけ、Environment「factory」に FACTORY_TOKEN（と、Next.js を公開するなら VERCEL_TOKEN）の登録が要る（docs/pipeline.md「工場」）。
 # テンプレート本体でだけ、オーナーが書いたIssueでだけ動く（公開リポジトリなので、ほかの人のIssueでは動かない）。
 name: Factory
@@ -74,14 +74,14 @@ jobs:
           { echo "name=$name"; echo "stack=$stack"; echo "desc<<DESC_END"; echo "$desc"; echo "DESC_END";
             echo "memo<<MEMO_END"; printf '%s\n' "$MEMO"; echo "MEMO_END"; } >> "$GITHUB_OUTPUT"
 
-  # 見た目の段（Next.js のときだけ）：強いモデルが、オーナーの見た目の基準（.github/factory/design-guide.md）を読んで、
-  # このサービスだけのデザイン仕様（docs/design.md）を書く。実装AIは、この仕様どおりに最初の画面を作る。
+  # デザイン部門（Next.js のときだけ）：好みではなく、使う場面の分析からデザイン仕様を決める（.github/factory/design-department.md）。
+  # 見た目の作り方はスキル frontend-design に従う。1人目が場面を分析して仕様を書き、2人目が別の目で検査して直す。
   # AIはファイルを書くだけ（鍵は持たない）。書いた物は build ジョブが形を確かめてから使う
   design:
     needs: plan
     if: needs.plan.outputs.stack == 'nextjs'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -90,35 +90,50 @@ jobs:
         with:
           fetch-depth: 1
       - uses: anthropics/claude-code-action@v1
-        id: claude
+        id: designer
         continue-on-error: true
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            あなたはトップクラスのプロダクトデザイナーです。新しく作るWebサービスの、デザイン仕様を書いてください。
+            あなたはこのサービスのデザイン部門です。新しく作るWebサービスの、使う場面の分析とデザイン仕様を書いてください。
             - サービス名：${{ needs.plan.outputs.name }}
             - 説明：${{ needs.plan.outputs.desc }}
             - 元のメモ：${{ needs.plan.outputs.memo }}
 
             手順：
-            1. `.github/factory/design-guide.md`（オーナーの見た目の基準と、実際の判定）を全部読む
-            2. `docs/design.md`（今の雛形。書き方の形）を読む
-            3. `factory-design.md` に、このサービスのデザイン仕様を書く（ほかのファイルは作らない）。中身：
-               - 1行目は `# デザイン仕様`
-               - 体験の核（最初の5秒で何を感じさせるか。動きと手触りで1文）
-               - 構図（PCとスマホ。何をどこに置くか。PCは 1024〜2560 の幅で崩れない割り方、スマホは最初の1画面に主役が入る）
-               - 色（4〜6色に名前と値と用途。表で）、文字（Google Fonts にある書体で、見出しと本文の2役。大きさの段）
-               - 動き（何が・いつ・何秒で・どんな曲線で。生きている映像は1か所だけ。canvas か WebGL で作れる物）
-               - 部品（ボタン・入力欄など、標準の部品をそのまま並べない作り方）と、画面の文言（短く、日本語）
-               - 避けること（基準の「AIが作った感の正体」から、このサービスで特に気をつける物）
-               誰が読んでも同じ画面が作れる具体さで書く。依存パッケージを増やさずに、Next.js と素の CSS・canvas・WebGL で作れる物にする。
-               構図・色・動きは、このサービスの題材から決める（ほかのサービスと同じ見た目にしない）
-          claude_args: '--model opus --max-turns 15 --allowedTools "Read,Write"'
+            1. `.github/factory/design-department.md`（デザイン部門の進め方）を全部読む
+            2. スキル frontend-design（`.claude/skills/frontend-design/SKILL.md`）を読む
+            3. `docs/design.md`（今の雛形）を読む
+            4. 進め方の「1. 使う場面を分析する」「2. サービスの型」をしてから、「3. 設計する」「4. 書き方」のとおりに、
+               このサービスのデザイン仕様を `factory-design.md` に書く（1行目は `# デザイン仕様`）
+            5. 使う場面のうち「使う人」と「使う場面」を、2〜4行の箇条書きで `factory-context.md` に書く（仕様書の「前提」に入る）
+            ほかのファイルは作らない・変えない。
+          claude_args: '--model opus --max-turns 25 --allowedTools "Read,Write,Glob,Grep,Skill"'
+      - uses: anthropics/claude-code-action@v1
+        id: inspector
+        continue-on-error: true
+        if: steps.designer.outcome == 'success'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたはデザイン部門の検査役です。別の担当が書いた、新しいサービスのデザイン仕様（`factory-design.md`）を検査して、直してください。
+            - サービス名：${{ needs.plan.outputs.name }}
+            - 説明：${{ needs.plan.outputs.desc }}
+            - 元のメモ：${{ needs.plan.outputs.memo }}
+
+            手順：
+            1. `.github/factory/design-department.md` と、スキル frontend-design（`.claude/skills/frontend-design/SKILL.md`）を読む
+            2. `factory-design.md` を、進め方の「5. 検査する」の項目で1つずつ確かめる
+            3. だめな所を `factory-design.md` の中で直す（書き方の形と節の順は守る。1行目は `# デザイン仕様` のまま）
+            4. 最後に `## 検査` の節を足し、確かめた項目と直した所を箇条書きで短く書く
+            ほかのファイルは作らない・変えない（`factory-context.md` は直してよい）。
+          claude_args: '--model opus --max-turns 20 --allowedTools "Read,Write,Edit,Glob,Grep,Skill"'
       - name: 書いた物を取っておく
         if: ${{ !cancelled() }}
         run: |
           mkdir -p "$RUNNER_TEMP/design"
           if [ -f factory-design.md ] && [ ! -L factory-design.md ]; then cp factory-design.md "$RUNNER_TEMP/design/design.md"; fi
+          if [ -f factory-context.md ] && [ ! -L factory-context.md ]; then cp factory-context.md "$RUNNER_TEMP/design/context.md"; fi
           touch "$RUNNER_TEMP/design/.keep"
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -178,6 +193,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
           DESIGN_FILE: ${{ runner.temp }}/design/design.md
+          CONTEXT_FILE: ${{ runner.temp }}/design/context.md
         run: .github/scripts/factory.sh
 
   # AIが名前を決められなかったときも、黙って終わらない
