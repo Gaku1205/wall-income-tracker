@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { dateKey, dayLabel, daysInMonth, shiftMinutes, type Shifts } from "@/lib/income";
+import { useSpringStyle } from "./useMotion";
 
 /** 8時間で板の高さの70% */
 const FULL_DAY_MINUTES = 8 * 60;
@@ -19,10 +20,22 @@ type Props = {
   wage: ReactNode;
   /** 板の右端に出す文言 */
   message: ReactNode;
+  reduced: boolean;
 };
 
 /** 今月の1日〜末日の棒 */
-export function DayRow({ year, month, today, shifts, openDay, wide, onOpen, wage, message }: Props) {
+export function DayRow({
+  year,
+  month,
+  today,
+  shifts,
+  openDay,
+  wide,
+  onOpen,
+  wage,
+  message,
+  reduced,
+}: Props) {
   const days = daysInMonth(year, month);
   const scroller = useRef<HTMLDivElement>(null);
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
@@ -75,11 +88,8 @@ export function DayRow({ year, month, today, shifts, openDay, wide, onOpen, wage
                 onKeyDown={(e) => onKeyDown(e, day)}
               >
                 <span className="bar-area">
-                  {minutes > 0 ? (
-                    <span className={`bar ${tense}`} style={{ height: `${ratio * 100}%` }} />
-                  ) : (
-                    <span className="dot" />
-                  )}
+                  <Bar percent={ratio * 100} tense={tense} reduced={reduced} />
+                  {minutes === 0 && <span className="dot" />}
                 </span>
                 <span className="date">{day}</span>
                 <span className={day === today ? "today-mark" : "today-mark none"} />
@@ -90,4 +100,15 @@ export function DayRow({ year, month, today, shifts, openDay, wide, onOpen, wage
       </div>
     </section>
   );
+}
+
+const applyHeight = (el: HTMLElement, v: number) => {
+  el.style.height = `${Math.max(0, v)}%`;
+};
+
+/** 棒。シフトが入った・消えたとき、前の高さから新しい高さへばねで伸び縮みする */
+function Bar({ percent, tense, reduced }: { percent: number; tense: string; reduced: boolean }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useSpringStyle(ref, percent, reduced, applyHeight, 0.05);
+  return <span ref={ref} className={`bar ${tense}`} />;
 }
