@@ -183,4 +183,23 @@ PY2
 )
 assert_eq "factory.yml の守り" "build-env,plan-no-factory,owner-only,template-only" "$result"
 
+echo "== デザイン部門：AIが動かせるコマンドは taste-skill の draw.mjs だけ。動かす前にスキルと手順書を読み取り専用にする"
+result=$(python3 - "$WORKFLOWS/factory.yml" <<'PY2'
+import sys, re, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["design"]["steps"]
+out = []
+bash = set()
+for st in steps:
+    args = (st.get("with") or {}).get("claude_args", "")
+    bash |= set(re.findall(r"Bash\(([^)]*)\)", args))
+out.append("bash=" + "|".join(sorted(bash)))
+names = [st.get("id") or st.get("name") or st.get("uses", "") for st in steps]
+ro = names.index("スキルと手順書を読み取り専用にする")
+out.append("ro-first" if ro < names.index("designer") else "ro-late")
+out.append("chmod" if "chmod -R a-w .claude/skills .github" in steps[ro]["run"] else "no-chmod")
+print(",".join(out))
+PY2
+)
+assert_eq "factory.yml のデザイン部門" "bash=node .claude/skills/taste-skill/scripts/draw.mjs:*,ro-first,chmod" "$result"
+
 finish

@@ -4,7 +4,7 @@
 #   1. テンプレートからリポジトリを作る（同じ名前があれば -2, -3 … を付ける）
 #   2. パイプラインの秘密と変数を、テンプレートの物から写す
 #   3. Vercel のプロジェクトを作ってつなぐ（Next.js で VERCEL_TOKEN があるとき）
-#   4. 中身を整えて main に push する（CLAUDE.md・仕様書の説明、Python なら見本に切り替え）。この push で Bootstrap が動く
+#   4. 中身を整えて main に push する（CLAUDE.md・仕様書の説明、デザイン仕様、デザイン部門が選んだ GSAP・Lenis、Python なら見本に切り替え）。この push で Bootstrap が動く
 #   5. main を守る（PRとCIの check を必須にする。管理者は通れる）
 #   6. Bootstrap がラベルを作るのを待って、1行のメモを最初のIssueにする（そこから先はいつものパイプライン）
 #   7. 元のIssueに結果を書いて閉じる
@@ -13,6 +13,7 @@
 #   GH_TOKEN（FACTORY_TOKEN：リポジトリを作れる鍵）、TEMPLATE（owner/repo）、ISSUE（元のIssueの番号）、MEMO（1行のメモ）
 #   APP_NAME・APP_STACK（nextjs か python）・APP_DESC（1行の説明）：AIが決めた物
 #   S_<名前>：写す秘密の値（S_CLAUDE_CODE_OAUTH_TOKEN など）、V_<名前>：写す変数の値（V_PIPELINE_APP_ID など）
+#   DESIGN_FILE・CONTEXT_FILE・LIBS_FILE（任意）：デザイン部門が書いたデザイン仕様・使う人と場面・入れる動きの道具（1行1つ）
 #   VERCEL_TOKEN・VERCEL_TEAM_ID（任意）、COMMENT_TOKEN（元のIssueにコメントする鍵。無ければ GH_TOKEN）
 #   テスト用：FACTORY_GIT_URL（clone 先の書式。%s にリポジトリ名）、VERCEL_API、FACTORY_WAIT_SEC
 set -uo pipefail
@@ -154,6 +155,31 @@ PY3
       echo "DESIGN=bad" > "$work/design.flag"
     fi
   fi
+  # デザイン部門が選んだ動きの道具（GSAP・Lenis）。デザイン仕様を使うときだけ、決まった3つの中からだけ入れる
+  # （アプリの AI は依存パッケージを足せないので、作るときに工場が入れておく）
+  if [ "$APP_STACK" = nextjs ] && [ "$(cat "$work/design.flag" 2> /dev/null)" = DESIGN=yes ] &&
+    [ -n "${LIBS_FILE:-}" ] && [ -f "$LIBS_FILE" ] && [ ! -L "$LIBS_FILE" ] && [ "$(wc -c < "$LIBS_FILE")" -le 200 ]; then
+    pkgs=()
+    while IFS= read -r lib; do
+      lib="$(printf '%s' "$lib" | tr -d '[:space:]')"
+      case "$lib" in
+        gsap) pkgs+=("gsap@^3" "@gsap/react@^2") ;;
+        @gsap/react) pkgs+=("gsap@^3" "@gsap/react@^2") ;;
+        lenis) pkgs+=("lenis@^1") ;;
+        "") ;;
+        *) echo "LIBS_SKIPPED=yes" >> "$work/libs.flag" ;;
+      esac
+    done < "$LIBS_FILE"
+    if [ "${#pkgs[@]}" -gt 0 ]; then
+      mapfile -t pkgs < <(printf '%s\n' "${pkgs[@]}" | sort -u)
+      if npm install --package-lock-only --no-audit --no-fund --save "${pkgs[@]}" > "$work/npm.log" 2>&1; then
+        echo "LIBS=${pkgs[*]}" >> "$work/libs.flag"
+      else
+        git checkout -q -- package.json package-lock.json 2> /dev/null || true
+        echo "LIBS_FAILED=yes" >> "$work/libs.flag"
+      fi
+    fi
+  fi
   # 工場は テンプレートの例（examples/）を新しいサービスには持ち込まない
   rm -rf examples
   # 工場のIssueの雛形も、テンプレート本体だけの物
@@ -167,6 +193,10 @@ case "$(cat "$work/design.flag" 2> /dev/null)" in
   DESIGN=yes) note "✅ デザイン部門：使う場面を分析して、このサービスのデザイン仕様（docs/design.md）を書き、別の目で検査した" ;;
   DESIGN=bad) note "⚠️ デザイン部門が書いたデザイン仕様の形が違ったので、雛形のままにした" ;;
 esac
+libs_line=$(grep '^LIBS=' "$work/libs.flag" 2> /dev/null | head -1)
+[ -n "$libs_line" ] && note "✅ デザイン部門が選んだ動きの道具を入れた：${libs_line#LIBS=}"
+grep -q '^LIBS_FAILED=' "$work/libs.flag" 2> /dev/null && note "⚠️ 動きの道具（GSAP・Lenis）を入れられませんでした（npm install が失敗。入れずに進めた）"
+grep -q '^LIBS_SKIPPED=' "$work/libs.flag" 2> /dev/null && note "⚠️ デザイン部門が、決まった物（gsap・@gsap/react・lenis）以外の道具を書いていたので、それは入れなかった"
 
 # ---- 5. main を守る ----
 ruleset=$(jq -nc '{

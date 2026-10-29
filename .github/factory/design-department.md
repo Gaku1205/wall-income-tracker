@@ -4,6 +4,35 @@
 
 見た目の作り方（題材からの方向づけ・書体の選び方・AIが作った感の避け方）は、スキル **frontend-design**（`.claude/skills/frontend-design/SKILL.md`）に従う。ただし、何を優先するか（演出か、操作のしやすさか）は、下の「使う場面」と「サービスの型」で決める。スキルの「大胆に」より、場面の必要が勝つ。
 
+## 0. 使う道具
+
+どれも、場面の分析（1・2）のあとに使う。道具から始めない。道具の言うことと場面の必要が食い違ったら、場面が勝つ。
+
+| 道具 | 置き場所 | 使い方 |
+| --- | --- | --- |
+| frontend-design | `.claude/skills/frontend-design/SKILL.md` | 方向づけ・書体・AIが作った感の避け方の基本 |
+| taste-skill | `.claude/skills/taste-skill/SKILL.md` | 247 の実在のサイトから作った「方向」の束。`node .claude/skills/taste-skill/scripts/draw.mjs` で、型に合う方向を配ってもらい、その中から場面に合う物を選ぶ（下の「taste-skill の配り方」）。AIが作った感の一覧は `references/tells.md`、毎日使う画面の決まりは `references/app-screens.md` |
+| デザインの参考 | `.github/factory/references/`（`README.md`・`INDEX.md`・`brands/`） | 同じ型の有名なサイトの見た目の書き起こし。**仕組みだけ**を取り出す（ブランドの色・ロゴ・書体は写さない。`README.md` の「してはいけないこと」） |
+| web-design-guidelines | `.claude/skills/web-design-guidelines/guidelines.md` | 画面の作法（キーボード・フォーカス・入力欄・動き・文字・長い文字・タッチ）。部品と状態・動き・避けることを書くときと、検査のときに当てる |
+| GSAP・Lenis | `.claude/skills/motion-gsap-lenis/SKILL.md` | 時間やスクロールに合わせた動き・なめらかなスクロール。**型が「鑑賞・作品・体験」のときだけ**、入れるかを決める（下の「GSAP・Lenis を入れるか」） |
+
+### taste-skill の配り方
+
+- 型が「管理・記録の道具」「調べる・比べる」「1回きりの手続き」：画面で作業する物なので、`--app` で配る
+  `node .claude/skills/taste-skill/scripts/draw.mjs --app --kind <kind> --brief "<英語で1行>" --out .taste-skill/app`
+  （kind は finance, wallet, commerce, analytics, devtools, builder, creator, smb-admin, workspace, community, support, markets, report から近い物）
+- 型が「鑑賞・作品・体験」「読む・学ぶ」：ページなので、3つ配って選ぶ
+  `node .claude/skills/taste-skill/scripts/draw.mjs --sector <sector> --brief "<英語で1行>" --sections <順に> --options 3`
+  選んだら、同じ引数から `--options 3` を外して `--direction <id>` を足し、全部を配ってもらう（sector と sections は `--list sectors`・`--list roles`）
+- 配られた方向（色・書体・構図）は、場面と型に合う所だけ使う。日本語の画面なので、書体は日本語が読める物に置き換える（配られた欧文の書体は、数字や見出しの欧文に使ってよい）。合わない所は理由を書いて変える
+- `.taste-skill/` に出る物は、作業用（design.md に写した物だけが残る）
+
+### GSAP・Lenis を入れるか
+
+- 型が「鑑賞・作品・体験」で、スクロールして見せる構図や、時間に沿った演出が場面の気持ち（最初の印象・世界観・触った気持ちよさ）に効くときだけ入れる。ほかの型では入れない（道具の画面では、なめらかなスクロールや大きな演出は操作の邪魔になる）
+- 入れるなら、`factory-libs.txt` に1行1つで書く。書いてよいのは `gsap`・`@gsap/react`・`lenis` だけ（GSAP を使うなら `gsap` と `@gsap/react` の両方）。入れないなら、このファイルは作らない
+- 入れたら、デザイン仕様の「8. 動き」に、どの動きを GSAP・Lenis で作るかを具体的に書く（何が・いつ・何秒で・どんな曲線で・`prefers-reduced-motion` ではどうなるか）
+
 ## 1. 使う場面を分析する（いちばん大事）
 
 メモは1行しか無いので、書かれていないことは**推定して、推定だと分かるように書く**（あとで直せるように）。
@@ -44,14 +73,14 @@
 - **文言**：使う人の言葉で短く。ボタンは「何が起きるか」を書く（「保存」「シフトを足す」）。エラーは「何が起きて、どうすればいいか」
 - **避けること**：このサービスで起きやすい失敗（読み間違い・押し間違い・情報の詰め込み・逆に削りすぎ）と、frontend-design の「AIが作った感」の一覧のうち、このサービスで起きやすい物
 
-依存パッケージを増やさずに、Next.js と素の CSS（必要なら canvas）で作れる物にする。
+依存パッケージを増やさずに、Next.js と素の CSS（必要なら canvas）で作れる物にする。例外は、上の「GSAP・Lenis を入れるか」で入れると決めた物だけ。
 
 ## 4. 書き方
 
 `# デザイン仕様` で始め、次の節を順に書く。誰が読んでも同じ画面が作れる具体さで（寸法・値・文言まで）。
 
 1. 使う場面（推定は「推定：」と書く）
-2. サービスの型と優先順位
+2. サービスの型と優先順位（参考にした仕組み：どのサイトの何を、なぜ。taste-skill で選んだ方向と、選んだ理由）
 3. 構図（スマホ・PC。ASCII の図があると良い）
 4. 色（表。コントラスト比つき）
 5. 文字
@@ -71,4 +100,7 @@
 - 空の状態で、何をすればいいか分かるか
 - 型に合っているか（道具なのに演出が多すぎないか、作品なのに無個性すぎないか）
 - 1024〜2560px の広い画面で、間延び・詰まりが無いか
-- 決め打ちの「よくある見た目」になっていないか（このサービスの場面から決めたと言えるか）。frontend-design の「AIが作った感」に当てはまらないか
+- 決め打ちの「よくある見た目」になっていないか（このサービスの場面から決めたと言えるか）。frontend-design の「AIが作った感」と、taste-skill の `references/tells.md` に当てはまらないか（道具の型なら `references/app-screens.md` の決まりで見る）
+- web-design-guidelines（`.claude/skills/web-design-guidelines/guidelines.md`）の規則に反する決まりを書いていないか（フォーカスの見え方、入力欄のラベル、動きと `prefers-reduced-motion`、長い文字・空の扱い、ズームの禁止など）。文言は日本語なので、英語向けの規則は同じスキルの SKILL.md のとおり読み替える
+- 参考のサイトのブランド（色・ロゴ・書体・決まり文句）を写していないか
+- `factory-libs.txt` があるなら、型が「鑑賞・作品・体験」で、「8. 動き」に使い方が具体的に書いてあるか。そうでなければ `factory-libs.txt` を消す（中身を空にする）

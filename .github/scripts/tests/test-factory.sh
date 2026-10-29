@@ -75,7 +75,14 @@ esac
 cat > "$FT/vercel-body.json"
 if [ -n "${VERCEL_FAIL:-}" ]; then echo '{"error":{"message":"repo not found"}}'; else echo '{"name":"made"}'; fi
 SH
-chmod +x "$T/bin/gh" "$T/bin/curl"
+# 疑似 npm：呼ばれた引数を残し、package.json に入れたことにする（NPM_FAIL があれば失敗する）
+cat > "$T/bin/npm" <<'SH'
+#!/usr/bin/env bash
+echo "npm $*" >> "$FT/calls.log"
+[ -n "${NPM_FAIL:-}" ] && { echo "npm ERR! network" >&2; echo '{"broken":1}' > package.json; exit 1; }
+for a in "$@"; do case "$a" in -*|install) ;; *) echo "// $a" >> package.json ;; esac; done
+SH
+chmod +x "$T/bin/gh" "$T/bin/curl" "$T/bin/npm"
 
 run_factory() { # 名前 言語 説明 [追加の環境変数...]
   rm -f "$T/calls.log" "$T/state.json" "$T/comment.txt" "$T/ruleset.json" "$T/vercel-body.json"; rm -rf "$T/remotes"; mkdir -p "$T/remotes"
@@ -166,5 +173,27 @@ printf '%s\n' "ちがう見出し" "短い" > "$T/design-bad.md"
 run_factory design-bad nextjs "説明" DESIGN_FILE="$T/design-bad.md" > /dev/null
 assert_not_contains "形が違えば雛形のまま" "$(file_in o/design-bad docs/design.md)" "ちがう見出し"
 assert_contains "そう書く" "$(cat "$T/comment.txt")" "雛形のままにした"
+
+echo "== デザイン部門が選んだ GSAP・Lenis：決まった物だけ、デザイン仕様を使うときだけ入れる"
+printf '%s\n' "gsap" "lenis" "left-pad" "" > "$T/libs.txt"
+run_factory libs-ok nextjs "説明" DESIGN_FILE="$T/design-ok.md" LIBS_FILE="$T/libs.txt" > /dev/null
+calls=$(cat "$T/calls.log")
+assert_contains "lock だけ更新して入れる（GSAP は React 用も一緒に）" "$calls" "npm install --package-lock-only --no-audit --no-fund --save @gsap/react@^2 gsap@^3 lenis@^1"
+assert_not_contains "決まった物以外は入れない" "$calls" "left-pad"
+pkg=$(file_in o/libs-ok package.json)
+assert_contains "package.json に入って push される" "$pkg" "// lenis@^1"
+assert_contains "結果に書く" "$(cat "$T/comment.txt")" "動きの道具を入れた：@gsap/react@^2 gsap@^3 lenis@^1"
+assert_contains "入れなかった物も書く" "$(cat "$T/comment.txt")" "決まった物（gsap・@gsap/react・lenis）以外"
+run_factory libs-nodesign nextjs "説明" DESIGN_FILE="$T/design-bad.md" LIBS_FILE="$T/libs.txt" > /dev/null
+assert_not_contains "デザイン仕様が雛形のままなら入れない" "$(cat "$T/calls.log")" "npm install"
+run_factory libs-py python "説明" LIBS_FILE="$T/libs.txt" > /dev/null
+assert_not_contains "Python では入れない" "$(cat "$T/calls.log")" "npm install"
+: > "$T/libs-empty.txt"
+run_factory libs-empty nextjs "説明" DESIGN_FILE="$T/design-ok.md" LIBS_FILE="$T/libs-empty.txt" > /dev/null
+assert_not_contains "空なら入れない（検査役が消した）" "$(cat "$T/calls.log")" "npm install"
+run_factory libs-fail nextjs "説明" DESIGN_FILE="$T/design-ok.md" LIBS_FILE="$T/libs.txt" NPM_FAIL=1 > /dev/null
+assert_not_contains "失敗したら package.json を元に戻す" "$(file_in o/libs-fail package.json)" "broken"
+assert_contains "失敗しても止めずに書く" "$(cat "$T/comment.txt")" "入れられませんでした"
+assert_contains "失敗してもサービスは作る" "$(cat "$T/comment.txt")" "新しいサービス **libs-fail** を作りました"
 
 finish

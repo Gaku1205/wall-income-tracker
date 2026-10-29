@@ -65,6 +65,7 @@ Issueを作る（メモ）。ラベルが無ければ自動で ai:plan が付く
 AIが正常に終わったのに変更が無いとき（質問した、指摘が誤りだと判断した、など）はAIの判断なので、やり直さず人間に回す。
 
 ## 安全のしくみ
+- レビューAIは、画面のファイルが変わったPRでは web-design-guidelines（`.claude/skills/web-design-guidelines/guidelines.md`）も当て、使う人が実際に困る物（キーボードで操作できない・フォーカスが見えない・ラベルが無い・`prefers-reduced-motion` を無視・ズームの禁止・長い文字や空で崩れる・取り消せない削除など）だけを指摘する。`docs/design.md` が決めていることは、そちらが正しい
 - レビューAIは普段 sonnet。追加＋削除が300行を超える変更と、ログイン・トークン・秘密・権限・依存（`package.json`）・ワークフローを触る変更は opus でレビューする（`claude-review.yml` の「レビューのモデルを決める」）
 - AIが動くジョブには `PIPELINE_TOKEN` を渡さない。企画・実装のあとの処理（次へ進める・PRを作る）は別のジョブで、main から取り直したスクリプトを動かす。AIが作業フォルダのスクリプトを書き換えても、強いトークンでは動かない（AIの結果は、実行記録と `plan-result.txt` をデータとして受け渡すだけ）
 - パイプラインの更新を配る（`sync.yml`）のは、テンプレートの main でCIが通った版だけ。CIが通ってから15分待ち（変数 `SYNC_DELAY_MIN` で変えられる。手で動かしたときは待たない）、その間に main がまた更新されたら新しい方だけを配る（続けてマージしても、配り先のPRは1つで済む）。配り先は、このテンプレートから作られ、パイプラインの鍵（App）が見えるリポジトリ（自動。新しいアプリを作っても書き足さなくてよい）と、`.github/sync-targets` に書いた物（テンプレートより前からあるリポジトリなど）。配りたくない物は `.github/sync-targets` に `!owner/repo` と書く（`sync-targets.sh`）。配るときは配り先の `.github/` をテンプレートの物で置き換える（テンプレートに無いファイルは消える）。配り先で自分で足したワークフローなどを残したいときは、配り先の `.github/sync-keep` に、そのファイルの名前を1行に1つ書く（例：`workflows/my-job.yml`）。配り先の main には直接入れず、`pipeline-sync/<sha>` のPRを作る。配り先のCIが通ったら、進行役がレビューなしでマージする（落ちたら `ai:stuck` で人間に回す。AIが作ったPRや、印の無いPRはこの扱いにしない）
@@ -86,7 +87,7 @@ AIが正常に終わったのに変更が無いとき（質問した、指摘が
 | AI（ワークフロー） | 許可している操作 | 許可していない操作と理由 |
 | --- | --- | --- |
 | 企画AI（`claude-plan.yml`） | `Bash(gh issue view:*)`、`Bash(gh issue edit:*)`、`Bash(gh issue comment:*)`、`Bash(gh issue create:*)`、`Bash(gh issue list:*)`、`Bash(gh pr list:*)`、`Bash(gh pr diff:*)`、`Read`、`Glob`、`Grep`、`Write` | コードを変えるgit操作・npm（企画はIssueを書くだけ。`Write` は結果ファイル `plan-result.txt` のため） |
-| 実装AI（`claude-implement.yml`） | pipeline.json の checks のコマンド（無ければ npm run typecheck・lint・test・build。下の「言語と公開先」）、`Bash(.github/scripts/tests/run-all.sh)`、`Bash(git status:*)`、`Bash(git diff:*)`、`Bash(git add:*)`、`Bash(git commit:*)`、`Bash(git fetch:*)`、`Bash(git merge:*)`、`Bash(git push:*)`、`Bash(bash .github/scripts/tests/run-all.sh)`、`Bash(shellcheck:*)`、`Skill`（.claude/skills/ のスキル。画面を作るときの frontend-design など） | `gh`（PRやコメントは進行役が作る）、`npm run readme:shots` などの重い物（ブラウザの撮影はCIのワークフローでやる）。ファイルの編集は、このツールの標準で許可される。gitは、標準に任せると拒否されて止まったことがあるので、明示して許可している。`git push --force`・`git rebase` は許可しない |
+| 実装AI（`claude-implement.yml`） | pipeline.json の checks のコマンド（無ければ npm run typecheck・lint・test・build。下の「言語と公開先」）、`Bash(.github/scripts/tests/run-all.sh)`、`Bash(git status:*)`、`Bash(git diff:*)`、`Bash(git add:*)`、`Bash(git commit:*)`、`Bash(git fetch:*)`、`Bash(git merge:*)`、`Bash(git push:*)`、`Bash(bash .github/scripts/tests/run-all.sh)`、`Bash(shellcheck:*)`、`Skill`（.claude/skills/ のスキル。画面を作るときの frontend-design・taste-skill・web-design-guidelines、GSAP・Lenis が入っているアプリでの motion-gsap-lenis。スクリプトは動かさず、文章を読んで使う） | `gh`（PRやコメントは進行役が作る）、`npm run readme:shots` などの重い物（ブラウザの撮影はCIのワークフローでやる）。ファイルの編集は、このツールの標準で許可される。gitは、標準に任せると拒否されて止まったことがあるので、明示して許可している。`git push --force`・`git rebase` は許可しない |
 | レビューAI（`claude-review.yml`） | `Bash(gh pr view:*)`、`Bash(gh pr diff:*)`、`Bash(gh issue view:*)`、`Bash(gh pr comment:*)`、`Read`、`Glob`、`Grep`、`Write`、`mcp__github_inline_comment__create_inline_comment` | コードの変更・git操作・npm（レビューは読むだけ。コードは直さない） |
 | 修正AI（`claude-mention.yml`） | `Bash(gh pr view:*)`、`Bash(gh pr edit:*)`、`Bash(gh pr comment:*)`、`Bash(git fetch:*)`、`Bash(git merge:*)`、`Bash(git status:*)`、`Bash(git diff:*)`、`Bash(git add:*)`、`Bash(git commit:*)`、`Bash(git push:*)`、pipeline.json の checks のコマンド（無ければ npm run typecheck・lint・test・build）、`Bash(.github/scripts/tests/run-all.sh)`、`Bash(bash .github/scripts/tests/run-all.sh)`、`Bash(shellcheck:*)`、`Skill` | `git rebase`・`git push --force`（履歴を書き換えない）、`gh pr merge`（マージは進行役だけ）。`gh pr edit` はPRの説明の直し、`git merge` はコンフリクトの解消のために許可している |
 
@@ -159,7 +160,13 @@ AIに許すコマンドを決めるので、`pipeline.json` と `.github/actions
 ai-dev-template に、タイトルが **`新サービス：`** で始まるIssueを書くと（例：「新サービス：毎朝の天気と予定を1枚で見られるページ」）、`factory.yml` が新しいサービスのリポジトリを作って、いつものパイプラインに渡す。テンプレート本体で、オーナーが書いたIssueでだけ動く。
 
 1. AIが、名前（英語の小文字と -）・言語（画面のあるWebなら Next.js、処理が中心なら Python）・1行の説明を決める（AIは名前を書くだけで、鍵は持たない）
-2. **デザイン部門**（Next.js のとき）：好みではなく、**使う場面の分析**から始める（`.github/factory/design-department.md`）。使う人・場面・端末・やりたいことの優先順を推定し、サービスの型（管理の道具・調べる・作品・読む・手続き）で何を優先するかを決めて（道具なら操作のしやすさと見やすさが先）、デザイン仕様（`docs/design.md`）を書く。見た目の作り方はスキル frontend-design（`.claude/skills/frontend-design/`）に従う。書いたあと、別の担当（検査役）が、場面とのつながり・最初の1画面・コントラスト・押す所の大きさ・空の状態・型との合い方を確かめて直す。使う人・場面は仕様書の「前提」にも入る。形が違えば雛形のまま進める
+2. **デザイン部門**（Next.js のとき）：好みではなく、**使う場面の分析**から始める（`.github/factory/design-department.md`）。使う人・場面・端末・やりたいことの優先順を推定し、サービスの型（管理の道具・調べる・作品・読む・手続き）で何を優先するかを決めて（道具なら操作のしやすさと見やすさが先）、デザイン仕様（`docs/design.md`）を書く。見た目の作り方はスキル frontend-design（`.claude/skills/frontend-design/`）に従う。道具は次のとおり（どれも場面の分析のあとに使い、食い違ったら場面が勝つ）
+   - **taste-skill**（`.claude/skills/taste-skill/`、MIT）：247 の実在のサイトから作った「方向」の束。デザイン部門は `draw.mjs` で型に合う方向を配ってもらい（道具なら `--app`、ページなら3つ配って選ぶ）、場面に合う所だけ使う。デザイン部門のAIが動かせるコマンドはこれだけで、動かす前にスキルと手順書を読み取り専用にする
+   - **デザインの参考**（`.github/factory/references/`、[awesome-design-md](https://github.com/VoltAgent/awesome-design-md)、MIT）：有名なサイト 84 個の見た目の書き起こし。同じ型の物から**仕組みだけ**を取り出す（ブランドの色・ロゴ・書体は写さない）。大きいので、アプリには配らない
+   - **web-design-guidelines**（`.claude/skills/web-design-guidelines/`、[Vercel の Web Interface Guidelines](https://github.com/vercel-labs/web-interface-guidelines)、MIT）：画面の作法の点検。元はネットから規則を取りに行くが、AIはネットから取れないので規則を `guidelines.md` に写してある。日本語の画面向けの読み替えは SKILL.md
+   - **GSAP・Lenis**（`.claude/skills/motion-gsap-lenis/`）：型が「鑑賞・作品・体験」のときだけ、デザイン部門が入れるかを決める（`factory-libs.txt` に `gsap`・`@gsap/react`・`lenis` のどれか）。工場が `npm install --package-lock-only` で入れてから push する（アプリのAIは依存パッケージを足せないため）。ほかの名前は入れない。失敗しても入れずに進める
+
+   書いたあと、別の担当（検査役）が、場面とのつながり・最初の1画面・コントラスト・押す所の大きさ・空の状態・型との合い方・web-design-guidelines・AIが作った感（taste-skill の `references/tells.md`）・参考のブランドを写していないか・GSAP・Lenis が型に合うかを確かめて直す。使う人・場面は仕様書の「前提」にも入る。形が違えば雛形のまま進める（そのときは GSAP・Lenis も入れない）
 3. `factory.sh` が、テンプレートからリポジトリを作る（同じ名前があれば `-2` …）
 4. パイプラインの秘密（`CLAUDE_CODE_OAUTH_TOKEN`・`PIPELINE_APP_PRIVATE_KEY`・`PIPELINE_TOKEN`・`NTFY_TOPIC`）と変数（`PIPELINE_APP_ID`・`NOTIFY_EVENTS`・`AGENT_DESK_URL`）を、テンプレートの物から写す
 5. Next.js で `VERCEL_TOKEN` があれば、Vercel のプロジェクトを作ってつなぐ

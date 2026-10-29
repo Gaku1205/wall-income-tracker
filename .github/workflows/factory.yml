@@ -1,6 +1,6 @@
 # 工場：ai-dev-template に「新サービス：〜」で始まるIssueを1行書くと、新しいサービスのリポジトリを作って、いつものパイプラインに渡す。
 #   例：「新サービス：毎朝の天気と予定を1枚で見られるページ」
-# 名前・言語（Next.js か Python）・1行の説明をAIが決め、Next.js ならデザイン部門が使う場面の分析からデザイン仕様を書き、あとは factory.sh が行う（リポジトリ作成・秘密と変数のコピー・
+# 名前・言語（Next.js か Python）・1行の説明をAIが決め、Next.js ならデザイン部門が使う場面の分析からデザイン仕様を書き（作品・体験の型なら GSAP・Lenis も選ぶ）、あとは factory.sh が行う（リポジトリ作成・秘密と変数のコピー・
 # Vercel・main の保護・最初のIssue）。最初の1回だけ、Environment「factory」に FACTORY_TOKEN（と、Next.js を公開するなら VERCEL_TOKEN）の登録が要る（docs/pipeline.md「工場」）。
 # テンプレート本体でだけ、オーナーが書いたIssueでだけ動く（公開リポジトリなので、ほかの人のIssueでは動かない）。
 name: Factory
@@ -75,7 +75,8 @@ jobs:
             echo "memo<<MEMO_END"; printf '%s\n' "$MEMO"; echo "MEMO_END"; } >> "$GITHUB_OUTPUT"
 
   # デザイン部門（Next.js のときだけ）：好みではなく、使う場面の分析からデザイン仕様を決める（.github/factory/design-department.md）。
-  # 見た目の作り方はスキル frontend-design に従う。1人目が場面を分析して仕様を書き、2人目が別の目で検査して直す。
+  # 道具：スキル frontend-design・taste-skill（方向を配る draw.mjs だけ動かしてよい）・web-design-guidelines、デザインの参考（.github/factory/references/）。
+  # 1人目が場面を分析して仕様を書き、2人目が別の目で検査して直す。型が「鑑賞・作品・体験」なら GSAP・Lenis を入れるかも決める（factory-libs.txt）。
   # AIはファイルを書くだけ（鍵は持たない）。書いた物は build ジョブが形を確かめてから使う
   design:
     needs: plan
@@ -89,6 +90,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
+      # taste-skill の draw.mjs は Node 22 以上が要る
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      # AIが動かしてよいスクリプト（draw.mjs）や手順書を、AI自身が書き換えられないようにする
+      - name: スキルと手順書を読み取り専用にする
+        run: chmod -R a-w .claude/skills .github
       - uses: anthropics/claude-code-action@v1
         id: designer
         continue-on-error: true
@@ -104,11 +112,15 @@ jobs:
             1. `.github/factory/design-department.md`（デザイン部門の進め方）を全部読む
             2. スキル frontend-design（`.claude/skills/frontend-design/SKILL.md`）を読む
             3. `docs/design.md`（今の雛形）を読む
-            4. 進め方の「1. 使う場面を分析する」「2. サービスの型」をしてから、「3. 設計する」「4. 書き方」のとおりに、
-               このサービスのデザイン仕様を `factory-design.md` に書く（1行目は `# デザイン仕様`）
-            5. 使う場面のうち「使う人」と「使う場面」を、2〜4行の箇条書きで `factory-context.md` に書く（仕様書の「前提」に入る）
-            ほかのファイルは作らない・変えない。
-          claude_args: '--model opus --max-turns 25 --allowedTools "Read,Write,Glob,Grep,Skill"'
+            4. 進め方の「1. 使う場面を分析する」「2. サービスの型」をする
+            5. 進め方の「0. 使う道具」のとおりに、taste-skill（`.claude/skills/taste-skill/SKILL.md` の最初の注意と、型に合う所）を読み、
+               `node .claude/skills/taste-skill/scripts/draw.mjs` で方向を配ってもらって選ぶ。`.github/factory/references/`（README.md と INDEX.md）から
+               同じ型のサイトを2〜3個選んで、仕組みだけを読む。`.claude/skills/web-design-guidelines/` の SKILL.md と guidelines.md を読む
+            6. 「3. 設計する」「4. 書き方」のとおりに、このサービスのデザイン仕様を `factory-design.md` に書く（1行目は `# デザイン仕様`）
+            7. 使う場面のうち「使う人」と「使う場面」を、2〜4行の箇条書きで `factory-context.md` に書く（仕様書の「前提」に入る）
+            8. 型が「鑑賞・作品・体験」で、進め方の「GSAP・Lenis を入れるか」で入れると決めたときだけ、`factory-libs.txt` に1行1つで書く
+            ほかのファイルは作らない・変えない（`.taste-skill/` は draw.mjs が作る作業用の物で、残らない）。
+          claude_args: '--model opus --max-turns 40 --allowedTools "Read,Write,Glob,Grep,Skill,Bash(node .claude/skills/taste-skill/scripts/draw.mjs:*)"'
       - uses: anthropics/claude-code-action@v1
         id: inspector
         continue-on-error: true
@@ -123,10 +135,13 @@ jobs:
 
             手順：
             1. `.github/factory/design-department.md` と、スキル frontend-design（`.claude/skills/frontend-design/SKILL.md`）を読む
-            2. `factory-design.md` を、進め方の「5. 検査する」の項目で1つずつ確かめる
-            3. だめな所を `factory-design.md` の中で直す（書き方の形と節の順は守る。1行目は `# デザイン仕様` のまま）
-            4. 最後に `## 検査` の節を足し、確かめた項目と直した所を箇条書きで短く書く
-            ほかのファイルは作らない・変えない（`factory-context.md` は直してよい）。
+            2. 検査に使う物を読む：`.claude/skills/web-design-guidelines/` の SKILL.md と guidelines.md、taste-skill の
+               `.claude/skills/taste-skill/references/tells.md`（道具の型なら `references/app-screens.md` も）、`.github/factory/references/README.md`
+            3. `factory-design.md` を、進め方の「5. 検査する」の項目で1つずつ確かめる。`factory-libs.txt` があれば、それも確かめる
+            4. だめな所を `factory-design.md` の中で直す（書き方の形と節の順は守る。1行目は `# デザイン仕様` のまま）。
+               GSAP・Lenis が要らないと判断したら、`factory-libs.txt` の中身を空にする
+            5. 最後に `## 検査` の節を足し、確かめた項目と直した所を箇条書きで短く書く
+            ほかのファイルは作らない・変えない（`factory-context.md` と `factory-libs.txt` は直してよい）。
           claude_args: '--model opus --max-turns 20 --allowedTools "Read,Write,Edit,Glob,Grep,Skill"'
       - name: 書いた物を取っておく
         if: ${{ !cancelled() }}
@@ -134,6 +149,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/design"
           if [ -f factory-design.md ] && [ ! -L factory-design.md ]; then cp factory-design.md "$RUNNER_TEMP/design/design.md"; fi
           if [ -f factory-context.md ] && [ ! -L factory-context.md ]; then cp factory-context.md "$RUNNER_TEMP/design/context.md"; fi
+          if [ -f factory-libs.txt ] && [ ! -L factory-libs.txt ]; then cp factory-libs.txt "$RUNNER_TEMP/design/libs.txt"; fi
           touch "$RUNNER_TEMP/design/.keep"
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -157,6 +173,10 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@v6
+      # デザイン部門が GSAP・Lenis を選んだときに npm install する
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
       - uses: actions/download-artifact@v4
         if: needs.design.result == 'success'
         continue-on-error: true
@@ -194,6 +214,7 @@ jobs:
           VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
           DESIGN_FILE: ${{ runner.temp }}/design/design.md
           CONTEXT_FILE: ${{ runner.temp }}/design/context.md
+          LIBS_FILE: ${{ runner.temp }}/design/libs.txt
         run: .github/scripts/factory.sh
 
   # AIが名前を決められなかったときも、黙って終わらない
