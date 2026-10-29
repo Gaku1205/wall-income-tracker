@@ -144,6 +144,8 @@ PY2
   fi
   # 工場は テンプレートの例（examples/）を新しいサービスには持ち込まない
   rm -rf examples
+  # 工場のIssueの雛形も、テンプレート本体だけの物
+  rm -f .github/ISSUE_TEMPLATE/new-service.yml
   git add -A
   git -c user.name="pipeline-factory" -c user.email="noreply@github.com" commit -q -m "工場：${name} の最初の準備（${APP_STACK}）"
   git push -q origin HEAD:main
