@@ -105,6 +105,7 @@ assert_not_contains "テンプレート本体だけの節を消す（自動マ�
 assert_not_contains "その但し書きも消す" "$claude" "ai-dev-template 自身"
 assert_contains "仕様書の目的に説明とメモ" "$(file_in o/morning-board docs/spec.md)" "（元のメモ：毎朝の天気と予定を1枚で見たい）"
 assert_contains "README はこのサービスの説明" "$(file_in o/morning-board README.md | head -3)" "毎朝の天気と予定を1枚で見るページ"
+assert_eq "工場のIssueの雛形は持ち込まない" "" "$(file_in o/morning-board .github/ISSUE_TEMPLATE/new-service.yml)"
 assert_eq "見本（examples）は持ち込まない" "" "$(file_in o/morning-board examples/python/README.md)"
 assert_contains "Next.js のまま" "$(file_in o/morning-board package.json)" '"next"'
 assert_contains "元のIssueに結果を書く" "$(cat "$T/comment.txt")" "新しいサービス **morning-board** を作りました"
