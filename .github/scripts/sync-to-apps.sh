@@ -19,8 +19,8 @@ for repo in "$@"; do
   if ! git clone -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${repo}.git" "$dir"; then
     echo "::error::$repo を取得できません"; fail=1; continue
   fi
-  # テンプレート本体だけの物（配り先では動かない）：工場のIssueの雛形
-  excludes=(--exclude=sync-keep --exclude=sync-targets --exclude=ISSUE_TEMPLATE/new-service.yml)
+  # テンプレート本体だけの物（配り先では動かない）：工場のIssueの雛形と、デザイン部門だけが読む参考（大きいので配らない）
+  excludes=(--exclude=sync-keep --exclude=sync-targets --exclude=ISSUE_TEMPLATE/new-service.yml --exclude=factory/references/)
   if [ -f "$dir/.github/sync-keep" ]; then
     while IFS= read -r name; do
       [ -n "$name" ] && excludes+=("--exclude=$name")
