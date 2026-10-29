@@ -1,10 +1,12 @@
-import { greeting } from "@/lib/greeting";
+import { Tracker } from "@/components/Tracker";
 
 export default function Home() {
   return (
-    <main className="container">
-      <h1>{greeting("世界")}</h1>
-      <p>このアプリは ai-dev-template から作られました。docs/spec.md に仕様を書いて始めます。</p>
+    <main>
+      <div className="wordmark" aria-hidden="true">
+        WALL
+      </div>
+      <Tracker />
     </main>
   );
 }
