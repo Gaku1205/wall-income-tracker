@@ -24,9 +24,17 @@ if has_label "$pr" "ai:stuck"; then
 fi
 
 if [ "$CONCLUSION" != "success" ]; then
-  # 使用量の上限などの一時的な失敗かもしれないので、人間に回す前に自動でやり直す（watchdog.sh）
-  mark_for_retry "$pr" review "$(failure_reason "レビューAIがエラーで止まりました（ログは、レビューAIの実行の方を見てください）")"
-  exit 0
+  # レビューAIが結果のコメント（「## Code review」）を書いたあとにエラーで終わることがある（後片付けの失敗など）。
+  # いまの先頭コミットより新しい結果が書けていれば、それで進める（やり直すと30分待つうえ、同じレビューをもう一度する）
+  head_date=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
+  written=$(all_comments "$pr" | jq --arg since "$head_date" \
+    '[.[] | select((.user.login == "claude[bot]" or .user.login == "github-actions[bot]") and (.body | startswith("## Code review")) and .created_at >= $since)] | length')
+  if [ "$written" -eq 0 ]; then
+    # 使用量の上限などの一時的な失敗かもしれないので、人間に回す前に自動でやり直す（watchdog.sh）
+    mark_for_retry "$pr" review "$(failure_reason "レビューAIがエラーで止まりました（ログは、レビューAIの実行の方を見てください）")"
+    exit 0
+  fi
+  echo "PR #$pr：レビューAIはエラーで終わったが、結果のコメントは書けているので、その結果で進めます"
 fi
 
 # いまの先頭コミットのあとに書かれた、最新のレビュー結果（「## Code review」で始まる）を探す。

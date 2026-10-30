@@ -21,6 +21,8 @@ AUTO_FIX_MARK="<!-- auto-fix -->"
 RESUME_MARK="<!-- auto-resume -->"
 # shellcheck disable=SC2034  # after-ci.sh など、この下を読み込む側のスクリプトで使う
 VISUAL_MARK="<!-- auto-visual-update -->"
+# shellcheck disable=SC2034  # after-ci.sh で使う
+PIPELINE_TEST_MARK="<!-- auto-pipeline-test-rerun -->"
 # 自動でやり直す回数の上限と、失敗してからやり直すまでの待ち時間（分）。
 # 使用量の上限で止まったときは、リセットされるまで何度かやり直しながら待つ
 RETRY_MARK="<!-- auto-retry -->"

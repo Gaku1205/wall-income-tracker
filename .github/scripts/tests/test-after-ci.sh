@@ -8,7 +8,8 @@ run_case() { # PR本文 落ちたステップ名
 import json, os, sys
 pr = {'number': 58, 'body': sys.argv[1], 'state': 'open', 'head': {'sha': 'abc', 'ref': 'claude/issue-54-x'}, 'updated_at': '2026-01-01T00:00:00Z'}
 steps = [{'name': '型チェック', 'conclusion': 'success'}, {'name': sys.argv[2], 'conclusion': 'failure'}, {'name': '見た目のテストの結果（差分の画像）を残す', 'conclusion': 'success'}]
-s = {'next_id': 0, 'comments': [], 'labels': {'58': []}, 'issue_updated': {}, 'pulls': [pr], 'jobs': [{'steps': steps}], 'checks': [], 'runs': [], 'branches': [], 'authors': {}}
+s = {'next_id': 0, 'comments': [], 'labels': {'58': []}, 'issue_updated': {}, 'pulls': [pr], 'jobs': [{'steps': steps}], 'checks': [], 'runs': [], 'branches': [], 'authors': {},
+     'files': os.environ.get('PR_FILES', 'src/app/page.tsx').split(), 'rerun_fail': bool(os.environ.get('RERUN_FAIL'))}
 json.dump(s, open(os.environ['MOCK_STATE'], 'w'))
 PY
   RUN_ID=1 CONCLUSION=failure HEAD_SHA=abc HEAD_BRANCH=claude/issue-54-x run_script after-ci.sh > /dev/null
@@ -26,6 +27,31 @@ assert_contains "直す依頼のコメントが付く" "$(comments_of 58)" "auto
 echo "== 型チェックが落ちた → 記載があっても AIに直させる"
 run_case "visual:update" "型チェック"
 assert_not_contains "visual:update は付かない" "$(labels_of 58)" "visual:update"
+assert_contains "直す依頼のコメントが付く" "$(comments_of 58)" "auto-fix"
+
+reruns() { python3 -c "import json,os;print(len(json.load(open(os.environ['MOCK_STATE'])).get('reruns',[])))"; }
+
+echo "== パイプライン自体のテストだけが落ちた・PRは .github/ を触っていない → AIに頼まず、1回だけCIをやり直す"
+run_case "Closes #1" "スクリプトのテスト"
+assert_eq "落ちたジョブをやり直す" "1" "$(reruns)"
+assert_not_contains "AIには直させない" "$(comments_of 58)" "auto-fix"
+assert_contains "印つきで知らせる" "$(comments_of 58)" "auto-pipeline-test-rerun"
+
+echo "== やり直しても落ちた（印がもうある） → 人間に回す"
+run_case "Closes #1" "shellcheck"
+state_py "s['reruns']=[]; s['comments']=[{'id':9,'issue':'58','body':'x <!-- auto-pipeline-test-rerun -->','user':{'login':'p'},'created_at':'$(ago 5)','updated_at':'$(ago 5)'}]"
+RUN_ID=1 CONCLUSION=failure HEAD_SHA=abc HEAD_BRANCH=claude/issue-54-x run_script after-ci.sh > /dev/null
+assert_contains "ai:stuck" "$(labels_of 58)" "ai:stuck"
+assert_eq "もうやり直さない" "0" "$(reruns)"
+assert_not_contains "AIには直させない" "$(comments_of 58)" "auto-fix"
+
+echo "== やり直しの API が断られた → 人間に回す"
+RERUN_FAIL=1 run_case "Closes #1" "スクリプトのテスト"
+assert_contains "ai:stuck" "$(labels_of 58)" "ai:stuck"
+
+echo "== PRが .github/ を触っている（テンプレート自身など） → 今までどおりAIに直させる"
+PR_FILES=".github/scripts/watchdog.sh" run_case "Closes #1" "スクリプトのテスト"
+assert_eq "やり直さない" "0" "$(reruns)"
 assert_contains "直す依頼のコメントが付く" "$(comments_of 58)" "auto-fix"
 
 sync_case() { # CIの結果 mainとの差

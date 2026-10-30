@@ -100,6 +100,25 @@ ${VISUAL_MARK}"
         echo "PR #$pr：見た目のテストだけが落ちたので、基準の画像の撮り直しを依頼しました"
         exit 0
       fi
+      # パイプライン自体の確認（shellcheck・スクリプトのテスト）だけが落ちていて、PRが .github/ を触っていない：
+      # 落ちた原因はこのPRの変更ではなく、AIは .github/ を直せない（直させても「直す物が無い」で止まる）。
+      # 一時的な揺れ（実行環境の入れ替わりなど）のことがあるので、1回だけ落ちたジョブをやり直す。それでも落ちたら人間に回す
+      only_pipeline=$(printf '%s' "$failed_steps" | jq 'length > 0 and all(.[]; . == "スクリプトのテスト" or . == "shellcheck")')
+      if [ "$only_pipeline" = "true" ] &&
+        files=$(gh api "repos/$REPO/pulls/$pr/files?per_page=100" --paginate -q '.[].filename' 2> /dev/null) &&
+        ! printf '%s\n' "$files" | grep -q '^\.github/'; then
+        reruns=$(all_comments "$pr" | jq --arg m "$PIPELINE_TEST_MARK" '[.[] | select(.body | contains($m))] | length')
+        if [ "$reruns" -lt 1 ] && gh api -X POST "repos/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs" > /dev/null 2>&1; then
+          comment "$pr" "パイプライン自体のテスト（スクリプトのテスト・shellcheck）だけが落ちました。このPRの変更（.github/ の外）が原因ではないので、AIには直させず、落ちたジョブを1回だけやり直します。
+
+${PIPELINE_TEST_MARK}"
+          echo "PR #$pr：パイプライン自体のテストだけが落ちたので、CIをやり直しました"
+          exit 0
+        fi
+        stop_for_human "$pr" "パイプライン自体のテスト（スクリプトのテスト・shellcheck）が落ちています。このPRの変更（.github/ の外）が原因ではなく、AIは .github/ を直せないので止めました。テンプレート（ai-dev-template）の側で確かめて、直ったら CI をやり直してから ai:stuck を外してください"
+        echo "PR #$pr：パイプライン自体のテストが続けて落ちたので、人間に回しました"
+        exit 0
+      fi
     fi
     notify ci_failed "CIが失敗しました" "PR #${pr} $(issue_title "$pr")：AIに直してもらいます" 3
     request_fix_or_stop "$pr" "$HEAD_SHA" "CIが失敗しました。失敗したチェックのログを確認して、原因を直してください。"

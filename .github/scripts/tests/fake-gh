@@ -111,6 +111,10 @@ if m:
 m=re.match(r'commits/([^/]+)/check-runs$',base)
 if m: out({'check_runs':st.get('checks',[])}); sys.exit(0)
 if re.match(r'actions/runs/\d+/jobs$',base): out({'jobs':st.get('jobs',[])}); sys.exit(0)
+m=re.match(r'actions/runs/(\d+)/rerun-failed-jobs$',base)
+if m and method=='POST':
+    if st.get('rerun_fail'): sys.stderr.write('HTTP 403: Resource not accessible by integration\n'); sys.exit(1)
+    st.setdefault('reruns',[]).append(int(m.group(1))); save(); print('{}'); sys.exit(0)
 m=re.match(r'actions/workflows/([^/]+)/runs$',base)
 if m: out({'workflow_runs':st.get('wf_runs',{}).get(m.group(1),[])}); sys.exit(0)
 m=re.match(r'actions/workflows/([^/]+)/dispatches$',base)
