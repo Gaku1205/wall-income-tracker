@@ -19,7 +19,7 @@ if base == "/commits/main": out({"sha": commits[0]["sha"]})
 elif base == "/commits": out([{"sha": c["sha"]} for c in commits])
 elif m := re.match(r"/commits/(\w+)/status$", base):
     c = [c for c in commits if c["sha"] == m.group(1)][0]
-    out({"statuses": [{"context": "Vercel", "state": c["state"], "updated_at": "2026-01-01T00:00:00Z"}] if c.get("state") else []})
+    out({"statuses": [{"context": "Vercel", "state": "success" if c["state"] == "ignored" else c["state"], "description": "Canceled by Ignored Build Step" if c["state"] == "ignored" else "Deployment has completed", "updated_at": "2026-01-01T00:00:00Z"}] if c.get("state") else []})
 elif m := re.match(r"/compare/(\w+)\.\.\.(\w+)$", base): out({"files": [{"filename": f} for f in st["changed"]]})
 elif base == "": out({"id": 4242})
 else: sys.stderr.write("UNHANDLED " + path + "\n"); sys.exit(1)
@@ -71,5 +71,10 @@ assert_eq "公開は頼まない" "no" "$(deployed)"
 echo "== チームのとき：teamId を付ける"
 run '{"commits":[{"sha":"c3"},{"sha":"c2","state":"success"}],"changed":["src/a.ts"]}' VERCEL_TEAM_ID=team_1 > /dev/null
 assert_contains "deployments に teamId" "$(cat "$T/calls.log")" "v13/deployments?teamId=team_1"
+
+echo "== 最新が「Ignored Build Step」で飛ばされた（success になる）：公開済みとみなさず、前の公開から比べる"
+run '{"commits":[{"sha":"c3","state":"ignored"},{"sha":"c2","state":"failure"},{"sha":"c1","state":"success"}],"changed":["src/a.ts"]}' > /dev/null
+assert_eq "公開する" "yes" "$(deployed)"
+assert_contains "最新の main の sha" "$(cat "$T/deploy-body.json")" '"sha":"c3"'
 
 finish

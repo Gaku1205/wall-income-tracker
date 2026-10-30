@@ -18,10 +18,12 @@ fi
 
 head=$(gh api "repos/$REPO/commits/main" -q .sha) || { echo "::error::main の先頭を調べられません"; exit 1; }
 
-# main の直近のコミットのうち、Vercel の公開に成功した物（新しい順に最大30件）
+# main の直近のコミットのうち、Vercel の公開に成功した物（新しい順に最大30件。飛ばした物は除く）
 last_ok=""
 for sha in $(gh api "repos/$REPO/commits?sha=main&per_page=30" -q '.[].sha'); do
-  state=$(gh api "repos/$REPO/commits/$sha/status" -q '[.statuses[] | select(.context | startswith("Vercel"))] | sort_by(.updated_at) | last | .state // ""' 2> /dev/null || true)
+  # 「Canceled by Ignored Build Step」（vercel.json の ignoreCommand で飛ばした物）も success になるので、公開した物には数えない
+  state=$(gh api "repos/$REPO/commits/$sha/status" -q '[.statuses[] | select(.context | startswith("Vercel"))] | sort_by(.updated_at) | last
+    | if . == null then "" elif .state == "success" and ((.description // "") | test("Ignored Build Step"; "i")) then "ignored" else .state end' 2> /dev/null || true)
   if [ "$state" = success ]; then last_ok="$sha"; break; fi
 done
 if [ "$last_ok" = "$head" ]; then
