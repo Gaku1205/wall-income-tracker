@@ -149,6 +149,18 @@ for pr in $(printf '%s' "$open_prs" | jq -r '.[].number'); do
       rerun_ci_if_waiting_approval "$pr" "$head" "$ref"
       continue
     fi
+    # ---- 3.2 main とコンフリクトしていて、CIが動いていない ----
+    # コンフリクトしたPRでは GitHub が CI（pull_request）を動かさないので、after-ci も呼ばれず止まる
+    # （例：基準の画像の撮り直しを push している間に、別のPRが main に入った）。AIに解消させる。
+    # 配布のPR（pipeline-sync/*）は次の配布で作り直されるので触らない。同じ先頭への依頼が出ていれば待つ
+    if [ "$(printf '%s' "$runs" | jq 'length')" -eq 0 ] && [[ "$ref" != pipeline-sync/* ]] &&
+      [ "$(pr_merge_state "$pr")" = dirty ]; then
+      asked=$(all_comments "$pr" | jq --arg mark "auto-fix-sha: $head" '[.[] | select(.body | contains($mark))] | length')
+      if [ "$asked" -eq 0 ]; then
+        request_fix_or_stop "$pr" "$head" "main とコンフリクトしていて、このPRのCIが動いていません（コンフリクトがあるとCIは動きません）。\`git fetch origin main\` のあと \`git merge origin/main\` でコンフリクトを解消してください。両方の変更の意図を残し（docs/spec.md・docs/design.md も両方の決まりを残す）、どちらかを捨てるときはPRにコメントで理由を書いてください。"
+      fi
+      continue
+    fi
   fi
 
   # レビューAI：ai:review を付けたのに結果が出ないまま止まっている
