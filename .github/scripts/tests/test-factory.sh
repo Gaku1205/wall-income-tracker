@@ -196,4 +196,16 @@ assert_not_contains "失敗したら package.json を元に戻す" "$(file_in o/
 assert_contains "失敗しても止めずに書く" "$(cat "$T/comment.txt")" "入れられませんでした"
 assert_contains "失敗してもサービスは作る" "$(cat "$T/comment.txt")" "新しいサービス **libs-fail** を作りました"
 
+echo "== Vercel の鍵（S_VERCEL_TOKEN）があるとき：Next.js にだけ写し、Vercel が自分で公開するのを止めて、最初の公開を頼む"
+run_factory vt-next nextjs "説明" VERCEL_TOKEN=v S_VERCEL_TOKEN=vt V_VERCEL_TEAM_ID=team_1 > /dev/null
+calls=$(cat "$T/calls.log")
+assert_contains "VERCEL_TOKEN を写す" "$calls" "secret VERCEL_TOKEN o/vt-next len=2"
+assert_contains "VERCEL_TEAM_ID を写す" "$calls" "variable VERCEL_TEAM_ID o/vt-next"
+assert_eq "vercel.json で自分の公開を止める" "false" "$(file_in o/vt-next vercel.json | jq -c .git.deploymentEnabled)"
+assert_contains "最初の公開について書く" "$(cat "$T/comment.txt")" "最初の公開"
+run_factory vt-py python "説明" S_VERCEL_TOKEN=vt > /dev/null
+assert_not_contains "Python には写さない" "$(cat "$T/calls.log")" "secret VERCEL_TOKEN"
+run_factory vt-none nextjs "説明" VERCEL_TOKEN=v > /dev/null
+assert_contains "鍵が無ければ vercel.json は今までどおり" "$(file_in o/vt-none vercel.json | jq -c .git.deploymentEnabled)" "claude/*"
+
 finish

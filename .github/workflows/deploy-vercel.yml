@@ -1,0 +1,58 @@
+# Vercel の本番の公開を、まとめて1回だけ頼む（Vercel の無料プランは「1日100回まで」なので、マージのたびに公開しない）。
+# main の CI が通ったら少し待ち、その間にまたマージされたら古い方の待ちは止まって、新しい方だけが最新の main を1回公開する。
+# 使うには：Secret の VERCEL_TOKEN（工場と配布が入れる）と、vercel.json の "git": { "deploymentEnabled": false }
+# （Vercel が自分で公開するのを止める）。VERCEL_TOKEN が無ければ何もしない（Vercel が自分で公開する、今までどおりの形）。
+# 待つ分は変数 VERCEL_DEPLOY_DELAY_MIN（既定 10 分）。手で動かしたときは待たない。
+name: Deploy Vercel
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-vercel
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: >-
+      !github.event.repository.is_template &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: 公開先が Vercel か
+        id: kind
+        run: |
+          source .github/scripts/stack.sh
+          if stack_deploy_kinds | grep -qx vercel; then echo "vercel=true" >> "$GITHUB_OUTPUT"; else echo "公開先に Vercel が無いので、何もしません"; fi
+      - name: 続けてのマージを待つ
+        if: steps.kind.outputs.vercel == 'true'
+        env:
+          DELAY: ${{ vars.VERCEL_DEPLOY_DELAY_MIN }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          case "$DELAY" in ''|*[!0-9]*) DELAY=10 ;; esac
+          [ "$EVENT" = "workflow_dispatch" ] && DELAY=0
+          echo "${DELAY} 分待ってから公開します（その間に main が更新されたら、新しい方が公開します）"
+          sleep $(( DELAY * 60 ))
+      - name: 最新の main を公開する
+        if: steps.kind.outputs.vercel == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+        run: .github/scripts/deploy-vercel.sh

@@ -22,8 +22,8 @@ OWNER="${TEMPLATE%%/*}"
 WAIT="${FACTORY_WAIT_SEC:-5}"
 GIT_URL="${FACTORY_GIT_URL:-https://x-access-token:${GH_TOKEN}@github.com/%s.git}"
 VERCEL_API="${VERCEL_API:-https://api.vercel.com}"
-COPY_SECRETS="CLAUDE_CODE_OAUTH_TOKEN PIPELINE_APP_PRIVATE_KEY PIPELINE_TOKEN NTFY_TOPIC"
-COPY_VARS="PIPELINE_APP_ID NOTIFY_EVENTS AGENT_DESK_URL"
+COPY_SECRETS="CLAUDE_CODE_OAUTH_TOKEN PIPELINE_APP_PRIVATE_KEY PIPELINE_TOKEN NTFY_TOPIC VERCEL_TOKEN"
+COPY_VARS="PIPELINE_APP_ID NOTIFY_EVENTS AGENT_DESK_URL VERCEL_TEAM_ID"
 report=()
 note() { report+=("$1"); echo "$1"; }
 fail() {
@@ -72,6 +72,8 @@ copied=()
 for n in $COPY_SECRETS; do
   v="S_$n"; val="${!v:-}"
   [ -z "$val" ] && continue
+  # Vercel の鍵は、Vercel で公開する物（Next.js）にだけ入れる（公開をまとめて頼む deploy-vercel.yml が使う）
+  [ "$n" = VERCEL_TOKEN ] && [ "$APP_STACK" != nextjs ] && continue
   if printf '%s' "$val" | gh secret set "$n" --repo "$NEW" > /dev/null 2>&1; then copied+=("$n"); else note "⚠️ 秘密 $n を写せませんでした（FACTORY_TOKEN に Secrets（Read and write）が要ります）"; fi
 done
 for n in $COPY_VARS; do
@@ -85,7 +87,7 @@ done
 vercel_note=""
 if [ "$APP_STACK" = nextjs ]; then
   if vout=$(REPO_FULL="$NEW" PROJECT="$name" "$HERE/factory-vercel.sh" 2>&1); then
-    note "✅ Vercel のプロジェクトを作ってつないだ（最初の push で公開が始まる）"
+    note "✅ Vercel のプロジェクトを作ってつないだ"
     vercel_note="Vercel：$vout"
   else
     note "⚠️ $vout"
@@ -180,6 +182,11 @@ PY3
       fi
     fi
   fi
+  # Vercel の鍵を入れたら、Vercel がマージのたびに自分で公開するのを止め、deploy-vercel.yml が落ち着いてから1回だけ公開する
+  # （無料プランの「1日100回まで」に当たらないように）。鍵が無いときは今までどおり Vercel が自分で公開する
+  if [ "$APP_STACK" = nextjs ] && [ -n "${S_VERCEL_TOKEN:-}" ] && [ -f vercel.json ]; then
+    jq '.git.deploymentEnabled = false' vercel.json > vercel.json.new && mv vercel.json.new vercel.json
+  fi
   # 工場は テンプレートの例（examples/）を新しいサービスには持ち込まない
   rm -rf examples
   # 工場のIssueの雛形も、テンプレート本体だけの物
@@ -189,6 +196,14 @@ PY3
   git push -q origin HEAD:main
 ) || fail "最初の準備を push できませんでした"
 note "✅ CLAUDE.md・仕様書・README に説明を書いて push した（Bootstrap が動く）"
+# Vercel が自分で公開しない形（上の deploymentEnabled: false）にしたので、最初の公開はここで頼む（あとは deploy-vercel.yml）
+if [ -n "$vercel_note" ] && [ -n "${S_VERCEL_TOKEN:-}" ]; then
+  if dout=$(GITHUB_REPOSITORY="$NEW" VERCEL_TOKEN="$S_VERCEL_TOKEN" VERCEL_TEAM_ID="${VERCEL_TEAM_ID:-}" "$HERE/deploy-vercel.sh" 2>&1); then
+    note "✅ 最初の公開を頼んだ（このあとは、マージが落ち着いてから最新の main を1回だけ公開する）"
+  else
+    note "⚠️ 最初の公開を頼めませんでした（$(printf '%s' "$dout" | tail -1 | sed 's/^::error:://' | cut -c1-160)）。次のマージのあとに公開されます"
+  fi
+fi
 case "$(cat "$work/design.flag" 2> /dev/null)" in
   DESIGN=yes) note "✅ デザイン部門：使う場面を分析して、このサービスのデザイン仕様（docs/design.md）を書き、別の目で検査した" ;;
   DESIGN=bad) note "⚠️ デザイン部門が書いたデザイン仕様の形が違ったので、雛形のままにした" ;;
