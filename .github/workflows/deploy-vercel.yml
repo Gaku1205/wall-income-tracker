@@ -2,7 +2,7 @@
 # main の CI が通ったら少し待ち、その間にまたマージされたら古い方の待ちは止まって、新しい方だけが最新の main を1回公開する。
 # 使うには：Secret の VERCEL_TOKEN（工場と配布が入れる）と、vercel.json の "git": { "deploymentEnabled": false }
 # （Vercel が自分で公開するのを止める）。VERCEL_TOKEN が無ければ何もしない（Vercel が自分で公開する、今までどおりの形）。
-# 待つ分は変数 VERCEL_DEPLOY_DELAY_MIN（既定 10 分）。手で動かしたときは待たない。
+# 待つ分は変数 VERCEL_DEPLOY_DELAY_MIN（既定 10 分）。手で動かしたとき・3時間ごとの確かめでは待たない。
 name: Deploy Vercel
 
 on:
@@ -11,6 +11,9 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+  # 公開が失敗したまま（回数の上限など）次のマージが無くても、3時間ごとに確かめて、まだ公開されていなければ公開し直す
+  schedule:
+    - cron: '17 */3 * * *'
 
 permissions:
   contents: read
@@ -23,7 +26,7 @@ jobs:
   deploy:
     if: >-
       !github.event.repository.is_template &&
-      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' ||
        (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -46,7 +49,7 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           case "$DELAY" in ''|*[!0-9]*) DELAY=10 ;; esac
-          [ "$EVENT" = "workflow_dispatch" ] && DELAY=0
+          [ "$EVENT" != "workflow_run" ] && DELAY=0
           echo "${DELAY} 分待ってから公開します（その間に main が更新されたら、新しい方が公開します）"
           sleep $(( DELAY * 60 ))
       - name: 最新の main を公開する
