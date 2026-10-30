@@ -92,3 +92,34 @@ jobs:
           if [ "${#targets[@]}" -eq 0 ]; then echo "配り先がありません（テンプレートから作ったリポジトリも、.github/sync-targets も無し）"; exit 0; fi
           echo "配り先：${targets[*]}"
           .github/scripts/sync-to-apps.sh "${targets[@]}"
+
+  # Vercel で公開するアプリに、公開をまとめて頼むための鍵（VERCEL_TOKEN）を配る（deploy-vercel.yml が使う）。
+  # 鍵は Environment「factory」（main からだけ使える）にあるので、このジョブだけそこで動かす。鍵が無ければ何もしない。
+  # 配る先は、配り先のうち vercel.json があるリポジトリだけ
+  vercel-token:
+    needs: sync
+    environment: factory
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Vercel の鍵を配る
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+        run: |
+          if [ -z "$GH_TOKEN" ] || [ -z "$VERCEL_TOKEN" ]; then echo "FACTORY_TOKEN か VERCEL_TOKEN が無いので、Vercel の鍵は配りません"; exit 0; fi
+          list=$(.github/scripts/sync-targets.sh .github/sync-targets)
+          mapfile -t targets < <(printf '%s\n' "$list" | awk 'NF')
+          for repo in "${targets[@]}"; do
+            gh api "repos/$repo/contents/vercel.json" > /dev/null 2>&1 || { echo "$repo：vercel.json が無いので配らない"; continue; }
+            if printf '%s' "$VERCEL_TOKEN" | gh secret set VERCEL_TOKEN --repo "$repo" > /dev/null; then echo "$repo：VERCEL_TOKEN を入れた"
+            else echo "::warning::$repo に VERCEL_TOKEN を入れられませんでした（FACTORY_TOKEN に Secrets の Read and write が要る）"; fi
+            if [ -n "$VERCEL_TEAM_ID" ]; then gh variable set VERCEL_TEAM_ID --repo "$repo" --body "$VERCEL_TEAM_ID" > /dev/null || true; fi
+          done

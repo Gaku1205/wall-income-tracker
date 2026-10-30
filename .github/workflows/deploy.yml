@@ -2,7 +2,7 @@
 #   aws-apprunner   Docker のイメージを作り、AWS App Runner で動かす（Web・API。言語を選ばない）
 #   github-release  OS ごとに配布物（exe など）を作り、GitHub Releases に置く（外部のアカウント不要）
 #   expo            スマホアプリを Expo（EAS）で配る
-#   vercel          ここでは何もしない（Vercel が自分で公開する。pipeline.json が無いときの既定）
+#   vercel          ここでは何もしない（deploy-vercel.yml が、マージが落ち着いてから最新の main を1回だけ公開する。VERCEL_TOKEN が無ければ Vercel が自分で公開する。pipeline.json が無いときの既定）
 # 結果はコミットの状態（deploy/<種類>）に書き、スマホに通知する。パイプラインの更新だけのコミットは公開しない。
 name: Deploy
 
