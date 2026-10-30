@@ -12,7 +12,7 @@ VERCEL_API="${VERCEL_API:-https://api.vercel.com}"
 REPO="${GITHUB_REPOSITORY:?}"
 
 if [ -z "${VERCEL_TOKEN:-}" ]; then
-  echo "VERCEL_TOKEN が無いので、ここでは公開しません（vercel.json で Vercel が自分で公開する設定なら、そちらで公開されます）"
+  echo "::notice::VERCEL_TOKEN が無いので、ここでは公開しません（vercel.json で Vercel が自分で公開する設定なら、そちらで公開されます）"
   exit 0
 fi
 
@@ -25,18 +25,18 @@ for sha in $(gh api "repos/$REPO/commits?sha=main&per_page=30" -q '.[].sha'); do
   if [ "$state" = success ]; then last_ok="$sha"; break; fi
 done
 if [ "$last_ok" = "$head" ]; then
-  echo "最新の main（${head:0:7}）はもう公開されています"
+  echo "::notice::最新の main（${head:0:7}）はもう公開されています"
   exit 0
 fi
 head_state=$(gh api "repos/$REPO/commits/$head/status" -q '[.statuses[] | select(.context | startswith("Vercel"))] | sort_by(.updated_at) | last | .state // ""' 2> /dev/null || true)
 if [ "$head_state" = pending ]; then
-  echo "最新の main（${head:0:7}）は、いま公開中です"
+  echo "::notice::最新の main（${head:0:7}）は、いま公開中です"
   exit 0
 fi
 if [ -n "$last_ok" ]; then
   changed=$(gh api "repos/$REPO/compare/$last_ok...$head" -q '.files[].filename' 2> /dev/null || true)
   if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -vqE '^(\.github/|docs/pipeline\.md$)'; then
-    echo "前の公開（${last_ok:0:7}）から、パイプラインの更新しか変わっていないので公開しません"
+    echo "::notice::前の公開（${last_ok:0:7}）から、パイプラインの更新しか変わっていないので公開しません"
     exit 0
   fi
 fi
@@ -62,4 +62,4 @@ if [ -z "$url" ]; then
   echo "::error::Vercel に公開を頼めませんでした（$(printf '%s' "$res" | jq -r '.error.message // "理由不明"' 2> /dev/null)）"
   exit 1
 fi
-echo "最新の main（${head:0:7}）の公開を頼みました：https://$url（プロジェクト $project）"
+echo "::notice::最新の main（${head:0:7}）の公開を頼みました：https://$url（プロジェクト $project）"
