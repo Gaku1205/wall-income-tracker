@@ -114,12 +114,12 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
         run: |
-          if [ -z "$GH_TOKEN" ] || [ -z "$VERCEL_TOKEN" ]; then echo "FACTORY_TOKEN か VERCEL_TOKEN が無いので、Vercel の鍵は配りません"; exit 0; fi
+          if [ -z "$GH_TOKEN" ] || [ -z "$VERCEL_TOKEN" ]; then echo "::notice::FACTORY_TOKEN か VERCEL_TOKEN が無いので、Vercel の鍵は配りません"; exit 0; fi
           list=$(.github/scripts/sync-targets.sh .github/sync-targets)
           mapfile -t targets < <(printf '%s\n' "$list" | awk 'NF')
           for repo in "${targets[@]}"; do
             gh api "repos/$repo/contents/vercel.json" > /dev/null 2>&1 || { echo "$repo：vercel.json が無いので配らない"; continue; }
-            if printf '%s' "$VERCEL_TOKEN" | gh secret set VERCEL_TOKEN --repo "$repo" > /dev/null; then echo "$repo：VERCEL_TOKEN を入れた"
+            if printf '%s' "$VERCEL_TOKEN" | gh secret set VERCEL_TOKEN --repo "$repo" > /dev/null; then echo "::notice::$repo：VERCEL_TOKEN を入れた"
             else echo "::warning::$repo に VERCEL_TOKEN を入れられませんでした（FACTORY_TOKEN に Secrets の Read and write が要る）"; fi
             if [ -n "$VERCEL_TEAM_ID" ]; then gh variable set VERCEL_TEAM_ID --repo "$repo" --body "$VERCEL_TEAM_ID" > /dev/null || true; fi
           done
