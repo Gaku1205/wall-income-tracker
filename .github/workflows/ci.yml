@@ -43,7 +43,7 @@ jobs:
         run: npm run test:visual
       - name: 見た目のテストの結果（差分の画像）を残す
         if: failure() && steps.visual.outputs.enabled == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: visual-diff
           path: test-results/

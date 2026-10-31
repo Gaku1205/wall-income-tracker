@@ -131,7 +131,7 @@ jobs:
           build=$(jq -r '.build' <<< "$CONFIG")
           echo "作る：$build"
           bash -eo pipefail -c "$build"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: build-${{ matrix.os }}
           path: ${{ fromJSON(needs.plan.outputs.release_config).files }}
@@ -161,7 +161,7 @@ jobs:
         run: |
           .github/scripts/deploy-status.sh github-release failure "配布物を作れませんでした（どれかの OS で失敗）" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           exit 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist-all
           pattern: build-*

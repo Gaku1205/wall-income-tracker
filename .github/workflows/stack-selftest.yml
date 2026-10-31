@@ -65,7 +65,7 @@ jobs:
           out=$("./$exe" Fukuoka)
           echo "$out"
           [ "$out" = "Hello, Fukuoka!" ] || { echo "::error::exe の出力が違う：$out"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: hello-${{ matrix.os }}
           path: examples/python/dist/*
