@@ -202,4 +202,40 @@ PY2
 )
 assert_eq "factory.yml のデザイン部門" "bash=node .claude/skills/taste-skill/scripts/draw.mjs:*,ro-first,chmod" "$result"
 
+echo "== 「新サービス：」のIssue：テンプレート自身の企画・実装には回さない（工場が受け持つ）"
+result=$(python3 - "$WORKFLOWS" <<'PY2'
+import sys, yaml
+w = sys.argv[1]
+out = []
+for f, job in (("claude-plan.yml", "plan"), ("claude-implement.yml", "implement")):
+    cond = yaml.safe_load(open(f"{w}/{f}"))["jobs"][job]["if"]
+    out.append(f"{job}:" + ("guarded" if "is_template" in cond and "新サービス：" in cond and "新サービス:" in cond else "open"))
+fj = yaml.safe_load(open(f"{w}/claude-plan.yml"))["jobs"].get("factory-issue")
+out.append("factory-issue:" + ("yes" if fj and "is_template" in fj["if"] else "no"))
+print(",".join(out))
+PY2
+)
+assert_eq "企画・実装は受けず、ラベルを外す" "plan:guarded,implement:guarded,factory-issue:yes" "$result"
+
+echo "== 見た目のテスト：AIは動かせるが基準の画像は撮り直せない。撮り直しが失敗したらAIに直させる"
+result=$(python3 - "$WORKFLOWS" <<'PY2'
+import sys, yaml
+w = sys.argv[1]; out = []
+for f, job in (("claude-implement.yml", "implement"), ("claude-mention.yml", "mention")):
+    d = yaml.safe_load(open(f"{w}/{f}"))["jobs"]
+    j = d[job] if job in d else list(d.values())[0]
+    args = [st for st in j["steps"] if "claude-code-action" in st.get("uses", "")][0]["with"]["claude_args"]
+    names = [st.get("name", "") for st in j["steps"]]
+    vis = [st for st in j["steps"] if st.get("id") == "visual"]
+    ok = ("${{ steps.visual.outputs.allowed }}" in args and vis and "Bash(npm run test:visual)" in vis[0]["run"]
+          and "--update-snapshots:*" in args.split("--disallowedTools")[1] and "見た目のテスト用のブラウザを入れる" in names)
+    out.append(f"{f.split('.')[0]}:" + ("ok" if ok else "ng"))
+steps = yaml.safe_load(open(f"{w}/visual-update.yml"))["jobs"]["unlabel"]["steps"]
+h = [st for st in steps if st.get("name") == "撮り直しが失敗したら、AIに直させる"]
+out.append("handoff:" + ("ok" if h and "needs.shoot.result == 'failure'" in h[0]["if"] and "request_fix_or_stop" in h[0]["run"] else "ng"))
+print(",".join(out))
+PY2
+)
+assert_eq "見た目のテストの扱い" "claude-implement:ok,claude-mention:ok,handoff:ok" "$result"
+
 finish
