@@ -151,7 +151,7 @@ jobs:
           if [ -f factory-context.md ] && [ ! -L factory-context.md ]; then cp factory-context.md "$RUNNER_TEMP/design/context.md"; fi
           if [ -f factory-libs.txt ] && [ ! -L factory-libs.txt ]; then cp factory-libs.txt "$RUNNER_TEMP/design/libs.txt"; fi
           touch "$RUNNER_TEMP/design/.keep"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: ${{ !cancelled() }}
         with:
           name: factory-design
@@ -177,7 +177,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: needs.design.result == 'success'
         continue-on-error: true
         with:
