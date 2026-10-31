@@ -39,6 +39,7 @@ PY
     # 見た目のテストのコマンドは、見た目のテストがあるアプリでだけ入る（AIの手元で動かすだけ）
     if [ "$tool" = '${{ steps.visual.outputs.allowed }}' ]; then
       assert_contains "$name：見た目のテストのコマンドが表にある" "$row" "\`Bash(npm run test:visual)\`"
+      assert_contains "$name：playwright のコマンドが表にある" "$row" "\`Bash(npx playwright test:*)\`"
       continue
     fi
     [ -z "$tool" ] && continue
@@ -48,7 +49,7 @@ PY
   listed=$(printf '%s' "$row" | awk -F'|' '{print $3}' | grep -oE '`[^`]+`' | tr -d '`')
   while IFS= read -r tool; do
     [ -z "$tool" ] && continue
-    case "$tool" in "Bash(npm run test:visual)" | "Bash(npm run test:visual -- -g:*)" | "Bash(npm run test:visual -- --update-snapshots:*)" | "Bash(npm run test:visual -- -u:*)")
+    case "$tool" in "Bash(npm run test:visual)" | "Bash(npm run test:visual -- -g:*)" | "Bash(npm run test:visual -- --update-snapshots:*)" | "Bash(npm run test:visual -- -u:*)" | "Bash(npx playwright test:*)")
       if printf '%s\n' "$tools" | grep -qxF '${{ steps.visual.outputs.allowed }}'; then PASSED=$((PASSED + 1)); continue; fi ;;
     esac
     if printf '%s\n' "$tools" | grep -qxF "$tool"; then PASSED=$((PASSED + 1)); else assert_eq "$name：表の $tool は、ワークフローにもある" "ある" "ない"; fi

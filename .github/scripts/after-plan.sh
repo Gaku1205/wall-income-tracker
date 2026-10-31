@@ -16,8 +16,17 @@ if [ "$PLAN_OUTCOME" != "success" ]; then
   handle_ai_failure "$ISSUE" plan "企画AIがエラーで止まりました" "${EXECUTION_FILE:-}"
   exit 0
 fi
+# 結果を書かずに終わった（質問のコメントも無い）のは、AIの一時的な不調。質問として人間に回すと、理由の分からない停止になるので、
+# 2回までは自動でやり直す（それでも書かなければ、理由を書いて人間に回す）
 if [ -z "$result" ]; then
-  result="QUESTION"
+  export GH_TOKEN="$GITHUB_TOKEN_FOR_LABELS"
+  if [ "$(retry_count "$ISSUE")" -lt 2 ]; then
+    mark_for_retry "$ISSUE" plan "企画AIが、清書の結果を書かずに終わりました"
+  else
+    remove_label "$ISSUE" "ai:plan"
+    stop_issue_for_human "$ISSUE" "企画AIが、自動のやり直しでも清書の結果を書きませんでした（質問もありません）。Issue の内容を確かめて、もう一度 ai:plan を付けるか、自分で ai:implement を付けてください"
+  fi
+  exit 0
 fi
 echo "清書の結果：$result"
 
