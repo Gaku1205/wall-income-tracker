@@ -54,7 +54,7 @@ jobs:
           fi
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           # AIに許すコマンド（見た目のテストを動かすだけ。基準の画像の撮り直しは --disallowedTools で止める）
-          if [ "$enabled" = true ]; then echo "allowed=Bash(npm run test:visual),Bash(npm run test:visual -- -g:*)" >> "$GITHUB_OUTPUT"; else echo "allowed=" >> "$GITHUB_OUTPUT"; fi
+          if [ "$enabled" = true ]; then echo "allowed=Bash(npm run test:visual),Bash(npm run test:visual -- -g:*),Bash(npx playwright test:*)" >> "$GITHUB_OUTPUT"; else echo "allowed=" >> "$GITHUB_OUTPUT"; fi
       - name: 見た目のテスト用のブラウザを入れる
         if: steps.visual.outputs.enabled == 'true'
         run: npx playwright install --with-deps chromium
@@ -78,7 +78,7 @@ jobs:
           allowed_bots: ${{ steps.bots.outputs.list }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           label_trigger: "ai:implement"
-          claude_args: "--model ${{ env.MODEL }} --max-turns ${{ env.MAX_TURNS }} --allowedTools \"${{ steps.stack.outputs.allowed }},${{ steps.visual.outputs.allowed }},Bash(.github/scripts/tests/run-all.sh),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git fetch:*),Bash(git merge:*),Bash(git push:*),Bash(bash .github/scripts/tests/run-all.sh),Bash(shellcheck:*),Skill\" --disallowedTools \"Bash(npm run test:visual -- --update-snapshots:*),Bash(npm run test:visual -- -u:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --force-with-lease:*),Bash(git rebase:*)\" --append-system-prompt \"push の前に、git fetch origin main と git merge origin/main で最新の main を取り込んでから、確認コマンドをもう一度通して push する。作業中に main のワークフローが更新されると、古い main のままの push は GitHub に拒否されるため。コンフリクトしたら両方の変更を残して解消する。.github/ のファイルは自分では変えない。\""
+          claude_args: "--model ${{ env.MODEL }} --max-turns ${{ env.MAX_TURNS }} --allowedTools \"${{ steps.stack.outputs.allowed }},${{ steps.visual.outputs.allowed }},Bash(.github/scripts/tests/run-all.sh),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git fetch:*),Bash(git merge:*),Bash(git push:*),Bash(bash .github/scripts/tests/run-all.sh),Bash(shellcheck:*),Skill\" --disallowedTools \"Bash(npm run test:visual -- --update-snapshots:*),Bash(npm run test:visual -- -u:*),Bash(npx playwright test --update-snapshots:*),Bash(npx playwright test -u:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --force-with-lease:*),Bash(git rebase:*)\" --append-system-prompt \"push の前に、git fetch origin main と git merge origin/main で最新の main を取り込んでから、確認コマンドをもう一度通して push する。作業中に main のワークフローが更新されると、古い main のままの push は GitHub に拒否されるため。コンフリクトしたら両方の変更を残して解消する。.github/ のファイルは自分では変えない。見た目のテスト（test:visual）がある所では、npm run test:visual -- -g テスト名（または npx playwright test -g テスト名）で、自分で動かして位置や数値を確かめられる（基準の画像の撮り直しはしない）。\""
       # AIの結果（実行記録）を、データとして次のジョブに渡す。ここでは Secret を使わない
       - name: AIの結果を取っておく
         if: ${{ !cancelled() }}
