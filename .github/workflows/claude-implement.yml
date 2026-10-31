@@ -15,7 +15,10 @@ on:
 
 jobs:
   implement:
-    if: github.event.label.name == 'ai:implement'
+    # テンプレート本体の「新サービス：」のIssueは工場（factory.yml）が受け持つ。ラベルが付いても、テンプレート自身には作らない
+    if: >-
+      github.event.label.name == 'ai:implement' &&
+      !(github.event.repository.is_template && (startsWith(github.event.issue.title, '新サービス：') || startsWith(github.event.issue.title, '新サービス:')))
     runs-on: ubuntu-latest
     outputs:
       outcome: ${{ steps.claude.outcome }}
@@ -41,6 +44,20 @@ jobs:
       - name: 実行環境をそろえる
         id: stack
         uses: ./.github/actions/setup-stack
+      # 見た目のテストがあるアプリでは、AIも手元で見た目のテストを動かして確かめられるようにする（位置や数値を測るテストを直すため）
+      - name: 見た目のテストがあるか
+        id: visual
+        run: |
+          enabled=false
+          if [ -n "${{ steps.stack.outputs.node }}" ] && [ -f package.json ]; then
+            enabled=$(jq -r '.scripts["test:visual"] != null' package.json)
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          # AIに許すコマンド（見た目のテストを動かすだけ。基準の画像の撮り直しは --disallowedTools で止める）
+          if [ "$enabled" = true ]; then echo "allowed=Bash(npm run test:visual),Bash(npm run test:visual -- -g:*)" >> "$GITHUB_OUTPUT"; else echo "allowed=" >> "$GITHUB_OUTPUT"; fi
+      - name: 見た目のテスト用のブラウザを入れる
+        if: steps.visual.outputs.enabled == 'true'
+        run: npx playwright install --with-deps chromium
       # パイプラインの App（ボット）がラベル・コメントで起こした実行を、AIのアクションが断らないようにする。
       # AI自身（claude[bot]）は許さない（自分のコメントで自分を呼ぶ繰り返しを防ぐ）。Secret は使わない
       - name: 起こしたボットを許可に入れる
@@ -61,7 +78,7 @@ jobs:
           allowed_bots: ${{ steps.bots.outputs.list }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           label_trigger: "ai:implement"
-          claude_args: "--model ${{ env.MODEL }} --max-turns ${{ env.MAX_TURNS }} --allowedTools \"${{ steps.stack.outputs.allowed }},Bash(.github/scripts/tests/run-all.sh),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git fetch:*),Bash(git merge:*),Bash(git push:*),Bash(bash .github/scripts/tests/run-all.sh),Bash(shellcheck:*),Skill\" --disallowedTools \"Bash(git push --force:*),Bash(git push -f:*),Bash(git push --force-with-lease:*),Bash(git rebase:*)\" --append-system-prompt \"push の前に、git fetch origin main と git merge origin/main で最新の main を取り込んでから、確認コマンドをもう一度通して push する。作業中に main のワークフローが更新されると、古い main のままの push は GitHub に拒否されるため。コンフリクトしたら両方の変更を残して解消する。.github/ のファイルは自分では変えない。\""
+          claude_args: "--model ${{ env.MODEL }} --max-turns ${{ env.MAX_TURNS }} --allowedTools \"${{ steps.stack.outputs.allowed }},${{ steps.visual.outputs.allowed }},Bash(.github/scripts/tests/run-all.sh),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git fetch:*),Bash(git merge:*),Bash(git push:*),Bash(bash .github/scripts/tests/run-all.sh),Bash(shellcheck:*),Skill\" --disallowedTools \"Bash(npm run test:visual -- --update-snapshots:*),Bash(npm run test:visual -- -u:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --force-with-lease:*),Bash(git rebase:*)\" --append-system-prompt \"push の前に、git fetch origin main と git merge origin/main で最新の main を取り込んでから、確認コマンドをもう一度通して push する。作業中に main のワークフローが更新されると、古い main のままの push は GitHub に拒否されるため。コンフリクトしたら両方の変更を残して解消する。.github/ のファイルは自分では変えない。\""
       # AIの結果（実行記録）を、データとして次のジョブに渡す。ここでは Secret を使わない
       - name: AIの結果を取っておく
         if: ${{ !cancelled() }}

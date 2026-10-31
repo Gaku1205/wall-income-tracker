@@ -8,8 +8,28 @@ on:
     types: [labeled]
 
 jobs:
+  # 「新サービス：」のIssueに ai:plan が付いたら、外して、工場が受け持つことを書く（テンプレート自身の企画・実装に回さない）
+  factory-issue:
+    if: >-
+      github.event.label.name == 'ai:plan' &&
+      github.event.repository.is_template &&
+      (startsWith(github.event.issue.title, '新サービス：') || startsWith(github.event.issue.title, '新サービス:'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$ISSUE/labels/ai%3Aplan" > /dev/null 2>&1 || true
+          gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -f body="このIssueは工場が受け持つので（新しいリポジトリを作って、そこで企画・実装する）、ai:plan を外しました。テンプレート自身には作りません。" > /dev/null
   plan:
-    if: github.event.label.name == 'ai:plan'
+    # テンプレート本体の「新サービス：」のIssueは工場（factory.yml）が受け持つ。ラベルが付いても、テンプレート自身には作らない
+    if: >-
+      github.event.label.name == 'ai:plan' &&
+      !(github.event.repository.is_template && (startsWith(github.event.issue.title, '新サービス：') || startsWith(github.event.issue.title, '新サービス:')))
     runs-on: ubuntu-latest
     outputs:
       outcome: ${{ steps.claude.outcome }}

@@ -147,3 +147,20 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
         run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR/labels/visual%3Aupdate" > /dev/null || true
+      # 撮り直し自体が失敗した（画像の比べではなく、位置や数値を確かめるテストが落ちた、など）：黙って止まらず、AIに直させる
+      # PRのコードではなく、main の進行役のスクリプトを使う（Secret を持つジョブで、PRのコードを動かさない）
+      - uses: actions/checkout@v6
+        if: needs.shoot.result == 'failure'
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: 撮り直しが失敗したら、AIに直させる
+        if: needs.shoot.result == 'failure'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          source .github/scripts/pipeline-lib.sh
+          has_label "$PR" "ai:stuck" && exit 0
+          request_fix_or_stop "$PR" "$HEAD_SHA" "見た目のテストの基準の画像を撮り直そうとしたら、撮り直しでは直らない失敗がありました（画像の比べではなく、位置や数値を確かめるテストが落ちている、など）。見た目のテスト（test:visual。-g でテスト名を絞れる）を動かして、落ちたテストと数値を確かめて、原因のコードを直してください。テストの条件はゆるめず、基準の画像も自分で撮り直さないでください。"

@@ -36,12 +36,21 @@ PY
       assert_contains "$name：確認コマンド（pipeline.json の checks）が表にある" "$row" "pipeline.json の checks"
       continue
     fi
+    # 見た目のテストのコマンドは、見た目のテストがあるアプリでだけ入る（AIの手元で動かすだけ）
+    if [ "$tool" = '${{ steps.visual.outputs.allowed }}' ]; then
+      assert_contains "$name：見た目のテストのコマンドが表にある" "$row" "\`Bash(npm run test:visual)\`"
+      continue
+    fi
+    [ -z "$tool" ] && continue
     assert_contains "$name：$tool が表にある" "$row" "\`$tool\`"
   done <<< "$tools"
   # 表に書いてあるのに、ワークフローに無い操作（古い記述）が無いか。「許可している操作」の列だけを見る
   listed=$(printf '%s' "$row" | awk -F'|' '{print $3}' | grep -oE '`[^`]+`' | tr -d '`')
   while IFS= read -r tool; do
     [ -z "$tool" ] && continue
+    case "$tool" in "Bash(npm run test:visual)" | "Bash(npm run test:visual -- -g:*)" | "Bash(npm run test:visual -- --update-snapshots:*)" | "Bash(npm run test:visual -- -u:*)")
+      if printf '%s\n' "$tools" | grep -qxF '${{ steps.visual.outputs.allowed }}'; then PASSED=$((PASSED + 1)); continue; fi ;;
+    esac
     if printf '%s\n' "$tools" | grep -qxF "$tool"; then PASSED=$((PASSED + 1)); else assert_eq "$name：表の $tool は、ワークフローにもある" "ある" "ない"; fi
   done <<< "$listed"
 done
