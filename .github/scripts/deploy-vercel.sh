@@ -30,9 +30,16 @@ if [ "$last_ok" = "$head" ]; then
   echo "::notice::最新の main（${head:0:7}）はもう公開されています"
   exit 0
 fi
-head_state=$(gh api "repos/$REPO/commits/$head/status" -q '[.statuses[] | select(.context | startswith("Vercel"))] | sort_by(.updated_at) | last | .state // ""' 2> /dev/null || true)
+head_state=$(gh api "repos/$REPO/commits/$head/status" -q '[.statuses[] | select(.context | startswith("Vercel"))] | sort_by(.updated_at) | last
+  | if . == null then "" elif .state == "success" and ((.description // "") | test("Ignored Build Step"; "i")) then "ignored" else .state end' 2> /dev/null || true)
 if [ "$head_state" = pending ]; then
   echo "::notice::最新の main（${head:0:7}）は、いま公開中です"
+  exit 0
+fi
+# 最新の main を前に頼んだら、Vercel が vercel.json の ignoreCommand で飛ばした（直前のコミットとの差しか見ないため）。
+# 何度頼んでも同じなので、やり直さない（3時間ごとに頼み続けて、そのたびに通知が鳴るのを防ぐ）。ignoreCommand を消せば直る
+if [ "$head_state" = ignored ]; then
+  echo "::warning::最新の main（${head:0:7}）の公開は、Vercel の ignoreCommand で飛ばされました。公開をまとめて頼む形では、vercel.json の ignoreCommand を消してください（パイプラインの物しか変わっていない時は、ここで公開しないので要りません）"
   exit 0
 fi
 if [ -n "$last_ok" ]; then

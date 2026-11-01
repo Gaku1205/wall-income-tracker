@@ -72,9 +72,14 @@ echo "== チームのとき：teamId を付ける"
 run '{"commits":[{"sha":"c3"},{"sha":"c2","state":"success"}],"changed":["src/a.ts"]}' VERCEL_TEAM_ID=team_1 > /dev/null
 assert_contains "deployments に teamId" "$(cat "$T/calls.log")" "v13/deployments?teamId=team_1"
 
-echo "== 最新が「Ignored Build Step」で飛ばされた（success になる）：公開済みとみなさず、前の公開から比べる"
-run '{"commits":[{"sha":"c3","state":"ignored"},{"sha":"c2","state":"failure"},{"sha":"c1","state":"success"}],"changed":["src/a.ts"]}' > /dev/null
+echo "== 前のコミットが「Ignored Build Step」で飛ばされた（success になる）：公開した物に数えず、その前の公開から比べる"
+run '{"commits":[{"sha":"c4"},{"sha":"c3","state":"ignored"},{"sha":"c2","state":"failure"},{"sha":"c1","state":"success"}],"changed":["src/a.ts"]}' > /dev/null
 assert_eq "公開する" "yes" "$(deployed)"
-assert_contains "最新の main の sha" "$(cat "$T/deploy-body.json")" '"sha":"c3"'
+assert_contains "最新の main の sha" "$(cat "$T/deploy-body.json")" '"sha":"c4"'
+
+echo "== 最新の main そのものが ignoreCommand で飛ばされた：頼み直さない（3時間ごとに頼み続けて通知が鳴るのを防ぐ）"
+out=$(run '{"commits":[{"sha":"c3","state":"ignored"},{"sha":"c1","state":"success"}],"changed":["src/a.ts"]}')
+assert_eq "頼み直さない" "no" "$(deployed)"
+assert_contains "ignoreCommand を消すよう書く" "$out" "ignoreCommand を消してください"
 
 finish
