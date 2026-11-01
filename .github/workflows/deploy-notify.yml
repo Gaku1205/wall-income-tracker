@@ -23,7 +23,12 @@ jobs:
           AGENT_DESK_URL: ${{ vars.AGENT_DESK_URL }}
           STATE: ${{ github.event.state }}
           MESSAGE: ${{ github.event.commit.commit.message }}
+          DESCRIPTION: ${{ github.event.description }}
         run: |
+          # 本当の公開ではない物は知らせない：ignoreCommand で飛ばした物（success になる）と、回数の上限（あとで自動でやり直す）
+          case "$DESCRIPTION" in
+            *"Ignored Build Step"* | *"rate limited"*) echo "知らせない：$DESCRIPTION"; exit 0 ;;
+          esac
           # マージコミットの説明（2行目以降）にPRのタイトルが入っている
           title=$(printf '%s\n' "$MESSAGE" | sed -n '3p')
           [ -z "$title" ] && title=$(printf '%s\n' "$MESSAGE" | head -n 1)

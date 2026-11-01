@@ -185,7 +185,9 @@ PY3
   # Vercel の鍵を入れたら、Vercel がマージのたびに自分で公開するのを止め、deploy-vercel.yml が落ち着いてから1回だけ公開する
   # （無料プランの「1日100回まで」に当たらないように）。鍵が無いときは今までどおり Vercel が自分で公開する
   if [ "$APP_STACK" = nextjs ] && [ -n "${S_VERCEL_TOKEN:-}" ] && [ -f vercel.json ]; then
-    jq '.git.deploymentEnabled = false' vercel.json > vercel.json.new && mv vercel.json.new vercel.json
+    # ignoreCommand（直前のコミットとの差だけを見る）は消す。まとめて公開すると、間のコミットの変更を見落として公開が飛ばされるため。
+    # パイプラインの物しか変わっていない時に公開しないのは、deploy-vercel.sh が決める
+    jq '.git.deploymentEnabled = false | del(.ignoreCommand)' vercel.json > vercel.json.new && mv vercel.json.new vercel.json
   fi
   # 工場は テンプレートの例（examples/）を新しいサービスには持ち込まない
   rm -rf examples

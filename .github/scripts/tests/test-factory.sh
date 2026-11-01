@@ -202,6 +202,7 @@ calls=$(cat "$T/calls.log")
 assert_contains "VERCEL_TOKEN を写す" "$calls" "secret VERCEL_TOKEN o/vt-next len=2"
 assert_contains "VERCEL_TEAM_ID を写す" "$calls" "variable VERCEL_TEAM_ID o/vt-next"
 assert_eq "vercel.json で自分の公開を止める" "false" "$(file_in o/vt-next vercel.json | jq -c .git.deploymentEnabled)"
+assert_eq "ignoreCommand は消す（まとめて公開すると間の変更を見落とすため）" "null" "$(file_in o/vt-next vercel.json | jq -c .ignoreCommand)"
 assert_contains "最初の公開について書く" "$(cat "$T/comment.txt")" "最初の公開"
 run_factory vt-py python "説明" S_VERCEL_TOKEN=vt > /dev/null
 assert_not_contains "Python には写さない" "$(cat "$T/calls.log")" "secret VERCEL_TOKEN"
