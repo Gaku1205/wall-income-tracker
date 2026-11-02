@@ -11,6 +11,7 @@
 #
 # 環境変数：
 #   GH_TOKEN（FACTORY_TOKEN：リポジトリを作れる鍵）、TEMPLATE（owner/repo）、ISSUE（元のIssueの番号）、MEMO（1行のメモ）
+#   MEMO_DETAIL（任意）：元のIssueの本文（詳しいメモ：載せたい中身・見た目のスタイルなど）。最初のIssueの本文に添える
 #   APP_NAME・APP_STACK（nextjs か python）・APP_DESC（1行の説明）：AIが決めた物
 #   S_<名前>：写す秘密の値（S_CLAUDE_CODE_OAUTH_TOKEN など）、V_<名前>：写す変数の値（V_PIPELINE_APP_ID など）
 #   DESIGN_FILE・CONTEXT_FILE・LIBS_FILE（任意）：デザイン部門が書いたデザイン仕様・使う人と場面・入れる動きの道具（1行1つ）
@@ -264,8 +265,16 @@ done
 [ "$labels" = yes ] || note "⚠️ Bootstrap のラベルがまだできていません（Actions の Bootstrap を見る）。Issue は先に作ります"
 look="見た目は docs/design.md のとおりに作ってください。"
 [ -n "$ref_line" ] && look="見た目は docs/design.md のとおりに作り、docs/design-ref/ の試作の画像を目標の絵にしてください（作った画面を撮って、試作と見比べて直す）。"
+body="工場（${TEMPLATE}#${ISSUE}）で作ったサービスの、最初のメモです。企画AIが清書して、そのまま実装まで進めます。最初の画面を一から作る大きい作業なので size:L（強いモデル）にしています。${look}"
+if [ -n "$(printf '%s' "${MEMO_DETAIL:-}" | tr -d '[:space:]')" ]; then
+  body="${body}
+
+## 詳しいメモ（元のIssueの本文）
+
+${MEMO_DETAIL}"
+fi
 first=$(gh api "repos/$NEW/issues" -f title="$MEMO" -f "labels[]=size:L" \
-  -f body="工場（${TEMPLATE}#${ISSUE}）で作ったサービスの、最初のメモです。企画AIが清書して、そのまま実装まで進めます。最初の画面を一から作る大きい作業なので size:L（強いモデル）にしています。${look}" -q .number 2>&1) \
+  -f body="$body" -q .number 2>&1) \
   || fail "最初のIssueを作れませんでした"
 note "✅ 最初のIssue：https://github.com/$NEW/issues/$first（自動で企画に回る）"
 # 公開アドレス：Vercel が最初の公開でアドレスを決めるまで待って調べる（同じ名前がほかの人に使われていると、名前の後ろに文字が付く）
