@@ -104,8 +104,8 @@ AIが正常に終わったのに変更が無いとき（質問した、指摘が
 文字だけで画面を作ると、行をまたいで揃うはずの列のずれ・重なり・何も無い帯・弱い主役に、誰も気づけない（工場で作った最初の2つのサービスで起きた）。そこで、画面を作るAIは**自分で撮って見る**。
 
 - 撮るのは `.github/scripts/shot.mjs`（依存なし。taste-skill の Chrome の操作を使い、ubuntu-latest に入っている Chrome で撮る。Node 22 以上）。`--serve` でビルド済みのアプリを立ち上げてパス（`/` など）を撮るか、HTML のファイルを撮る。幅は 390・1440・1920。押す・入力する・localStorage にデータを入れるなどの操作をしてから撮る場面は `--steps` の JSON で書く（使い方はファイルの先頭）
-- **実装AI**（`claude-implement.yml`）：画面のあるアプリ（package.json に `start` がある Node のアプリ）では、確認コマンドが通ったあと `npm run build` → `node .github/scripts/shot.mjs --serve /` で撮り、画像を全部見て、`docs/design-ref/` の目標の絵があれば見比べ、目立つ問題の上位3つを直して撮り直す（最大3回）。撮った画像は `.shots/` にでき、コミットされない（`.git/info/exclude`）。そのぶん時間の上限を 45 分にしている
-- **デザイン部門**（工場）：仕様を書く前に、主な場面の試作を HTML で描いて撮り、見て直す（下の「工場」）
+- **実装AI**（`claude-implement.yml`）：画面のあるアプリ（package.json に `start` がある Node のアプリ）では、確認コマンドが通ったあと `npm run build` → `node .github/scripts/shot.mjs --serve /` で撮り、画像を全部見て、`docs/design-ref/` の目標の絵があれば見比べ、目立つ問題の上位3つを直して撮り直す（最大3回）。撮った画像は `.shots/` にでき、コミットされない（`.git/info/exclude`）。そのあと、**別のAI（審査役）**が、ワークフローが撮り直した画像と目標の絵だけを見て採点し（コードは見ない）、8点に届かなければ、指摘をつけて実装AIにもう1回だけ直させる。採点はPRの本文に入る。そのぶん時間の上限を 75 分にしている
+- **デザイン部門**（工場）：仕様を書く前に、主な場面の試作を HTML で描いて撮り、見て直す。そのあと審査役が画像だけで採点する（下の「工場」）
 
 ## 言語と公開先（`pipeline.json`）
 
@@ -170,14 +170,12 @@ AIに許すコマンドを決めるので、`pipeline.json` と `.github/actions
 ai-dev-template に、タイトルが **`新サービス：`** で始まるIssueを書くと（例：「新サービス：毎朝の天気と予定を1枚で見られるページ」）、`factory.yml` が新しいサービスのリポジトリを作って、いつものパイプラインに渡す。テンプレート本体で、オーナーが書いたIssueでだけ動く。Issue の本文は「詳しいメモ」として、名前決め・デザイン部門・最初のIssueに渡る（載せたい中身や、見た目のスタイルの指定。3000文字まで）。本文で見た目のスタイル（Liquid Glass など）を指定すると、デザイン部門はそれを方向の中心にし、そのスタイルの要素には「AIが作った感」の禁止（ガラス・グラデーションなど）を当てない（読みやすさの決まりは外さない。`.github/factory/design-department.md`）。
 
 1. AIが、名前（英語の小文字と -）・言語（画面のあるWebなら Next.js、処理が中心なら Python）・1行の説明を決める（AIは名前を書くだけで、鍵は持たない）
-2. **デザイン部門**（Next.js のとき）：好みではなく、**使う場面の分析**から始める（`.github/factory/design-department.md`）。使う人・場面・端末・やりたいことの優先順を推定し、サービスの型（管理の道具・調べる・作品・読む・手続き）で何を優先するかを決めて（道具なら操作のしやすさと見やすさが先）、デザイン仕様（`docs/design.md`）を書く。見た目の作り方はスキル frontend-design（`.claude/skills/frontend-design/`）に従う。道具は次のとおり（どれも場面の分析のあとに使い、食い違ったら場面が勝つ）
-   - **taste-skill**（`.claude/skills/taste-skill/`、MIT）：247 の実在のサイトから作った「方向」の束。デザイン部門は `draw.mjs` で型に合う方向を配ってもらい（道具なら `--app`、ページなら3つ配って選ぶ）、場面に合う所だけ使う。試作は `inspect.mjs` で測れる。デザイン部門のAIが動かせるコマンドは、この2つと撮影の `shot.mjs` だけで、動かす前にスキルと手順書を読み取り専用にする
-   - **試作と撮影**：文章を書く前に、主な場面（最初に開いた時・いちばん使う時・データが多い時・終わり、時間で変わる物は変化の途中も）を2〜5個、1場面1ファイルの HTML で `factory-proto/` に描き、`shot.mjs` で 390・1440・1920 の幅で撮って、画像を全部見て採点し（taste-skill の `references/critique.md`）、上位3つを直す（最大3回）。仕様は最後の試作のとおりに書き、先頭に「目標の絵」として場面と画像の名前を書く。試作とその画像は、新しいリポジトリの `docs/design-ref/` に入り（決まった形の PNG と HTML だけ。合わせて 40 個・25MB まで）、実装AIが撮った画面と見比べる目標の絵になる
-   - **デザインの参考**（`.github/factory/references/`、[awesome-design-md](https://github.com/VoltAgent/awesome-design-md)、MIT）：有名なサイト 84 個の見た目の書き起こし。同じ型の物から**仕組みだけ**を取り出す（ブランドの色・ロゴ・書体は写さない）。大きいので、アプリには配らない
-   - **web-design-guidelines**（`.claude/skills/web-design-guidelines/`、[Vercel の Web Interface Guidelines](https://github.com/vercel-labs/web-interface-guidelines)、MIT）：画面の作法の点検。元はネットから規則を取りに行くが、AIはネットから取れないので規則を `guidelines.md` に写してある。日本語の画面向けの読み替えは SKILL.md
-   - **GSAP・Lenis**（`.claude/skills/motion-gsap-lenis/`）：型が「鑑賞・作品・体験」のときだけ、デザイン部門が入れるかを決める（`factory-libs.txt` に `gsap`・`@gsap/react`・`lenis` のどれか）。工場が `npm install --package-lock-only` で入れてから push する（アプリのAIは依存パッケージを足せないため）。ほかの名前は入れない。失敗しても入れずに進める
-
-   書いたあと、別の担当（検査役）が、まず試作を撮り直して**画像で**採点し（主役が目立つか・揃うはずの物が揃っているか・空いた帯や片寄りが無いか・例の文字や知らせの重なり・眩しさ）、そのうえで場面とのつながり・最初の1画面・コントラスト・押す所の大きさ・空の状態・型との合い方・web-design-guidelines・AIが作った感（taste-skill の `references/tells.md`）・参考のブランドを写していないか・GSAP・Lenis が型に合うかを確かめて、試作と仕様の両方を直す。使う人・場面は仕様書の「前提」にも入る。形が違えば雛形のまま進める（そのときは GSAP・Lenis も入れない）
+2. **デザイン部門**（Next.js のとき。`.github/factory/design-department.md`）：目標は「賞を取るサイトと並べて見劣りしない」。決まりは最低限（読める・押せる・動きを止められる・スマホで成立する・目的が果たせる・ブランドを写さない）だけにして、色・書体・質感・ガラス・グラデーション・写真・3D は自由に選ばせる（決まりを足すほど無難で地味になったため。taste-skill の家の決まりと inspect.mjs の FAIL は、工場では守らせない）
+   - 場面を短く分析して、題材から1つの強い方向を決め、主な場面の試作を HTML で `factory-proto/` に描き、`shot.mjs` で 390・1440・1920 の幅で撮って見て直してから、短い仕様（150行くらい）を書く。**見た目の正は試作の HTML**で、実装はそのコードを移してよい
+   - **素材**：写真は `.github/scripts/fetch-photos.sh "<英語の検索語>" <枚数>` で、Openverse から CC0・パブリックドメインの物だけを取る（鍵は要らない。合わせて 12 枚まで、出どころは CREDITS.md）。試作で使った写真だけが `public/photos/` に入る。3D・動きは `factory-libs.txt` に `three`・`@react-three/fiber`・`@react-three/drei`・`gsap`・`@gsap/react`・`lenis` を書けば、工場が `npm install --package-lock-only` で入れる（アプリのAIは依存を足せないため）。シェーダーはライブラリなしで書ける
+   - **審査役**：別のAIが、仕様・試作の HTML・前の採点を隠した状態（`.github/scripts/factory-blind.sh`）で、**画像だけ**を見て10点満点で厳しく採点する（賞を取るサイトが8〜9、テンプレートが5）。8点に届かなければ、指摘を `factory-critique.md` に書いてデザイン部門に戻す（最大2回）。最後の点数は元のIssueの結果に書く
+   - 発想の材料：スキル frontend-design・taste-skill（`draw.mjs` で方向を配ってもらえる）・デザインの参考（`.github/factory/references/`、有名なサイトの仕組みの書き起こし。大きいのでアプリには配らない）。メモで見た目のスタイル（Liquid Glass など）を指定すると、それが方向の中心になる
+   - 使う人・場面は仕様書の「前提」にも入る。仕様の形が違えば雛形のまま進める（そのときは道具も写真も入れない）
 3. `factory.sh` が、テンプレートからリポジトリを作る（同じ名前があれば `-2` …）
 4. パイプラインの秘密（`CLAUDE_CODE_OAUTH_TOKEN`・`PIPELINE_APP_PRIVATE_KEY`・`PIPELINE_TOKEN`・`NTFY_TOPIC`）と変数（`PIPELINE_APP_ID`・`NOTIFY_EVENTS`・`AGENT_DESK_URL`）を、テンプレートの物から写す
 5. Next.js で `VERCEL_TOKEN` があれば、Vercel のプロジェクトを作ってつなぐ

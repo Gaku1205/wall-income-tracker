@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       outcome: ${{ steps.claude.outcome }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     concurrency:
       group: claude-implement-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -76,6 +76,7 @@ jobs:
             echo "prompt=画面に触る作業では、確認コマンドが通ったあと、npm run build をしてから node .github/scripts/shot.mjs --serve / で画面を撮る（ほかのページはパスを並べる。押したり入力したりした後の場面は --steps で書く。使い方はそのファイルの先頭）。390・1440・1920 の幅の画像が .shots/ にできるので、全部 Read で見る。docs/design-ref/ に目標の絵（試作の画像）があれば見比べる。行をまたいで揃うはずの列や数字のずれ・重なり・何も無い大きな帯・左右の片寄り・はみ出し・入力済みに見える例の文字・目立たない主役を探し、目立つ問題の上位3つを直して撮り直す（最大3回）。.shots/ はコミットしない。Issue への報告に、撮って見た場面と直した所を短く書く。" >> "$GITHUB_OUTPUT"
             # 撮った画像をコミットしないように（.gitignore は変えない）
             echo "/.shots/" >> .git/info/exclude
+            echo "/.review/" >> .git/info/exclude
             # Ubuntu 24.04 は、Chrome の安全な囲い（sandbox）に要る仕組みを止めていることがあるので、使えるようにする
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 > /dev/null 2>&1 || true
           else
@@ -103,6 +104,59 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           label_trigger: "ai:implement"
           claude_args: "--model ${{ env.MODEL }} --max-turns ${{ env.MAX_TURNS }} --allowedTools \"${{ steps.stack.outputs.allowed }},${{ steps.visual.outputs.allowed }},${{ steps.shots.outputs.allowed }},Bash(.github/scripts/tests/run-all.sh),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git fetch:*),Bash(git merge:*),Bash(git push:*),Bash(bash .github/scripts/tests/run-all.sh),Bash(shellcheck:*),Skill\" --disallowedTools \"Bash(npm run test:visual -- --update-snapshots:*),Bash(npm run test:visual -- -u:*),Bash(npx playwright test --update-snapshots:*),Bash(npx playwright test -u:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --force-with-lease:*),Bash(git rebase:*)\" --append-system-prompt \"push の前に、git fetch origin main と git merge origin/main で最新の main を取り込んでから、確認コマンドをもう一度通して push する。作業中に main のワークフローが更新されると、古い main のままの push は GitHub に拒否されるため。コンフリクトしたら両方の変更を残して解消する。.github/ のファイルは自分では変えない。見た目のテスト（test:visual）がある所では、npm run test:visual -- -g テスト名（または npx playwright test -g テスト名）で、自分で動かして位置や数値を確かめられる（基準の画像の撮り直しはしない）。${{ steps.shots.outputs.prompt }}\""
+      # 審査役：実装AIとは別のAIが、ワークフローが撮った画面の画像だけを見て、目標の絵（docs/design-ref/）と比べて採点する。
+      # 作った本人の「試作とほぼ同じ」をうのみにしない。8点に届かなければ、指摘をつけて実装AIにもう1回だけ直させる
+      - name: 審査用に画面を撮る
+        id: review_shots
+        if: steps.shots.outputs.enabled == 'true' && steps.claude.outcome == 'success'
+        continue-on-error: true
+        run: |
+          # 実装AIがブランチを作って画面に関わる物を変えたときだけ
+          git fetch -q origin "${{ github.event.repository.default_branch }}"
+          changed=$(git diff --name-only "origin/${{ github.event.repository.default_branch }}...HEAD" 2> /dev/null | grep -E '^(src/|app/|public/|components/)|\.(css|tsx|jsx)$' || true)
+          if [ -z "$changed" ]; then echo "画面に関わる変更が無いので、審査しません"; echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          rm -rf .review && mkdir -p .review/shots .review/ref
+          npm run build > .review/build.log 2>&1 || { echo "ビルドできないので審査しません（CIで分かる）"; echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          steps=(); [ -f .shots/steps.json ] && steps=(--steps .shots/steps.json)
+          node .github/scripts/shot.mjs --serve --out .review/shots "${steps[@]}" / || true
+          cp docs/design-ref/*.png .review/ref/ 2> /dev/null || true
+          if ls .review/shots/*.png > /dev/null 2>&1; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: anthropics/claude-code-action@v1
+        id: critic
+        if: steps.review_shots.outputs.ok == 'true'
+        continue-on-error: true
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたは、厳しいことで知られるアートディレクターです。実装された画面を、**画像だけ**で審査してください。コード・仕様・Issue は見ないでください。
+            開いてよいのは `.review/shots/`（いまの画面。名前の末尾が幅：390 はスマホ、1440・1920 は PC）と `.review/ref/`（デザイン部門の試作＝目標の絵。無いこともある）の画像だけです。
+            1. 両方の画像を全部 Read で見る
+            2. 10点満点で採点する。目安：9＝賞を取る／8＝プロの仕事で記憶に残る／7＝きれいだが既視感／6＝テンプレートっぽい／5以下＝AIが作った感・崩れ。
+               見る所：目標の絵と比べて弱くなった所（質感・主役・余白・文字の大きさや太さ・色）／崩れ（重なり・はみ出し・揃っていない列・何も無い帯・片寄り）／スマホでも成立するか。
+               目標の絵が無ければ、画面そのものの質で採点する。甘くしない。迷ったら低い方
+            3. `.review/critique.md` に書く（このファイルだけを書く）。1行目 `点数: 7.5`（数字だけ）、2行目 `判定: 通す`（8.0 以上）か `判定: 直す`（8.0 未満）。
+               そのあと `## 直すこと` に、効く順に最大5個。どの画像の・どこが・なぜだめで・どう直すとよいかを具体的に
+          claude_args: '--model opus --max-turns 20 --allowedTools "Read,Glob,Write"'
+      - name: 審査の点数を読む
+        id: review_judge
+        if: steps.critic.outcome == 'success'
+        run: |
+          score=$(grep -m1 -E '^点数' .review/critique.md 2> /dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)
+          echo "審査役の点数：${score:-なし}"
+          if [ -n "$score" ] && awk -v s="$score" 'BEGIN { exit !(s < 8.0) }'; then echo "redo=true" >> "$GITHUB_OUTPUT"; else echo "redo=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: anthropics/claude-code-action@v1
+        id: fix
+        if: steps.review_judge.outputs.redo == 'true'
+        continue-on-error: true
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたは、Issue #${{ github.event.issue.number }}「${{ github.event.issue.title }}」を実装したAIです。作った画面を、別のAI（審査役）が画像だけで審査し、8点に届きませんでした。
+            1. `.review/critique.md`（審査の結果）と、`.review/shots/`（審査に使った画像）・`.review/ref/`（目標の絵）を見る
+            2. 指摘を効く順に直す。直したら確認コマンドを全部通し、`npm run build` → `node .github/scripts/shot.mjs --serve /` で撮り直して、画像を全部 Read で見る
+            3. いまのブランチにコミットして `git push origin HEAD` する（push の前に git fetch origin main と git merge origin/main）
+            4. Issue へは何も書かなくてよい（審査の結果はPRの本文に自動で入る）
+          claude_args: "--model ${{ env.MODEL }} --max-turns 50 --allowedTools \"${{ steps.stack.outputs.allowed }},${{ steps.visual.outputs.allowed }},${{ steps.shots.outputs.allowed }},Bash(.github/scripts/tests/run-all.sh),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git fetch:*),Bash(git merge:*),Bash(git push:*),Bash(bash .github/scripts/tests/run-all.sh),Bash(shellcheck:*),Skill\" --disallowedTools \"Bash(npm run test:visual -- --update-snapshots:*),Bash(npm run test:visual -- -u:*),Bash(npx playwright test --update-snapshots:*),Bash(npx playwright test -u:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --force-with-lease:*),Bash(git rebase:*)\" --append-system-prompt \"push の前に、git fetch origin main と git merge origin/main で最新の main を取り込んでから、確認コマンドをもう一度通して push する。作業中に main のワークフローが更新されると、古い main のままの push は GitHub に拒否されるため。コンフリクトしたら両方の変更を残して解消する。.github/ のファイルは自分では変えない。見た目のテスト（test:visual）がある所では、npm run test:visual -- -g テスト名（または npx playwright test -g テスト名）で、自分で動かして位置や数値を確かめられる（基準の画像の撮り直しはしない）。${{ steps.shots.outputs.prompt }}\""
       # AIの結果（実行記録）を、データとして次のジョブに渡す。ここでは Secret を使わない
       - name: AIの結果を取っておく
         if: ${{ !cancelled() }}
@@ -111,6 +165,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ai-result"
           if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then cp "$EXECUTION_FILE" "$RUNNER_TEMP/ai-result/execution.json"; fi
+          if [ -f .review/critique.md ] && [ ! -L .review/critique.md ]; then head -c 20000 .review/critique.md > "$RUNNER_TEMP/ai-result/critique.md"; fi
           touch "$RUNNER_TEMP/ai-result/.keep"
       - uses: actions/upload-artifact@v6
         if: ${{ !cancelled() }}
@@ -182,4 +237,5 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           AI_OUTCOME: ${{ needs.implement.outputs.outcome }}
           EXECUTION_FILE: ${{ runner.temp }}/ai-result/execution.json
+          CRITIQUE_FILE: ${{ runner.temp }}/ai-result/critique.md
         run: .github/scripts/open-pr.sh

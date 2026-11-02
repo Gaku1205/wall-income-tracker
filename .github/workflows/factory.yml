@@ -87,16 +87,17 @@ jobs:
           { echo "name=$name"; echo "stack=$stack"; echo "desc<<DESC_END"; echo "$desc"; echo "DESC_END";
             echo "memo<<MEMO_END"; printf '%s\n' "$MEMO"; echo "MEMO_END"; } >> "$GITHUB_OUTPUT"
 
-  # デザイン部門（Next.js のときだけ）：好みではなく、使う場面の分析からデザイン仕様を決める（.github/factory/design-department.md）。
-  # 道具：スキル frontend-design・taste-skill（方向を配る draw.mjs と、測る inspect.mjs だけ動かしてよい）・web-design-guidelines、デザインの参考（.github/factory/references/）、
-  # 撮影（.github/scripts/shot.mjs）。1人目が場面を分析し、主な場面の試作を HTML で描いて撮り、画像を見て直してから仕様を書く。
-  # 2人目が別の目で、画像と仕様を検査して直す。試作とその画像は docs/design-ref/ に入り、実装の目標の絵になる。型が「鑑賞・作品・体験」なら GSAP・Lenis を入れるかも決める（factory-libs.txt）。
+  # デザイン部門（Next.js のときだけ）：.github/factory/design-department.md。決まりは最低限（読める・押せる・止められる）にして、大胆な方向を取らせる。
+  # 1. デザイン部門が、場面を短く分析して方向を決め、主な場面の試作を HTML で描いて撮り、画像を見て直してから、短い仕様を書く
+  #    （写真は fetch-photos.sh で CC0・パブリックドメインの物だけ。3D・動きの道具は factory-libs.txt で頼む）
+  # 2. 審査役（別のAI）が、仕様・HTML・前の採点を隠した状態で、画像だけを見て厳しく採点する。8点に届かなければ、指摘をつけてデザイン部門に戻す（最大2回）
+  # 試作・画像・使った写真は docs/design-ref/ と public/photos/ に入り、実装の目標になる。
   # AIはファイルを書くだけ（鍵は持たない）。書いた物は build ジョブが形を確かめてから使う
   design:
     needs: plan
     if: needs.plan.outputs.stack == 'nextjs'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 150
     permissions:
       contents: read
       id-token: write
@@ -108,7 +109,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      # AIが動かしてよいスクリプト（draw.mjs・inspect.mjs・shot.mjs）や手順書を、AI自身が書き換えられないようにする
+      # AIが動かしてよいスクリプト（draw.mjs・inspect.mjs・shot.mjs・fetch-photos.sh）や手順書を、AI自身が書き換えられないようにする
       - name: スキルと手順書を読み取り専用にする
         run: chmod -R a-w .claude/skills .github
       # 撮影（shot.mjs・inspect.mjs）で Chrome を動かす。Ubuntu 24.04 は、Chrome の安全な囲い（sandbox）に要る仕組みを止めていることがあるので、使えるようにする
@@ -122,7 +123,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            あなたはこのサービスのデザイン部門です。新しく作るWebサービスの、使う場面の分析とデザイン仕様を書いてください。
+            あなたはこのサービスのアートディレクター兼デザイナーです。新しく作るWebサービスの見た目を決めてください。
             - サービス名：${{ needs.plan.outputs.name }}
             - 説明：${{ needs.plan.outputs.desc }}
             - 元のメモ：${{ needs.plan.outputs.memo }}
@@ -130,30 +131,28 @@ jobs:
               ${{ needs.plan.outputs.detail }}
 
             手順：
-            1. `.github/factory/design-department.md`（デザイン部門の進め方）を全部読む
-            2. スキル frontend-design（`.claude/skills/frontend-design/SKILL.md`）を読む
-            3. `docs/design.md`（今の雛形）を読む
-            4. 進め方の「1. 使う場面を分析する」「2. サービスの型」をする
-            5. 進め方の「0. 使う道具」のとおりに、taste-skill（`.claude/skills/taste-skill/SKILL.md` の最初の注意と、型に合う所）を読み、
-               `node .claude/skills/taste-skill/scripts/draw.mjs` で方向を配ってもらって選ぶ。`.github/factory/references/`（README.md と INDEX.md）から
-               同じ型のサイトを2〜3個選んで、仕組みだけを読む。`.claude/skills/web-design-guidelines/` の SKILL.md と guidelines.md を読む
-            6. 「3. 設計する」で決めたら、文章を書く前に「4. 試作を描いて見る」をする：主な場面を2〜5個、1場面1ファイルの HTML で
-               `factory-proto/NN-<英小文字の名前>.html` に描き、`node .github/scripts/shot.mjs --out factory-proto/shots factory-proto/*.html` で撮り、
-               画像を全部 Read で見て、taste-skill の `references/critique.md` で採点し、上位3つを直して撮り直す（最大3回）。
-               画像を見ないまま次に進まない
-            7. 「5. 書き方」のとおりに、最後の試作と同じ画面になるデザイン仕様を `factory-design.md` に書く（1行目は `# デザイン仕様`、すぐ下に「目標の絵」）
-            8. 使う場面のうち「使う人」と「使う場面」を、2〜4行の箇条書きで `factory-context.md` に書く（仕様書の「前提」に入る）
-            9. 型が「鑑賞・作品・体験」で、進め方の「GSAP・Lenis を入れるか」で入れると決めたときだけ、`factory-libs.txt` に1行1つで書く
-            ほかのファイルは作らない・変えない（`factory-proto/` は試作の置き場。`.taste-skill/` は draw.mjs・inspect.mjs が作る作業用の物で、残らない）。
-          claude_args: '--model opus --max-turns 100 --allowedTools "Read,Write,Edit,Glob,Grep,Skill,WebSearch,WebFetch,Bash(node .claude/skills/taste-skill/scripts/draw.mjs:*),Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),Bash(node .github/scripts/shot.mjs:*)"'
-      - uses: anthropics/claude-code-action@v1
-        id: inspector
-        continue-on-error: true
+            1. `.github/factory/design-department.md`（進め方。短い）を全部読む。スキル frontend-design（`.claude/skills/frontend-design/SKILL.md`）も読む
+            2. 進め方のとおりに、場面を短く分析し、方向を決め、素材（写真・シェーダー・3D）を考え、主な場面の試作を `factory-proto/NN-<英小文字の名前>.html` に描く
+            3. `node .github/scripts/shot.mjs --out factory-proto/shots factory-proto/*.html` で撮り、画像を全部 Read で見て、自分に厳しく直す（最大3回）。画像を見ないまま次に進まない
+            4. 進め方の「仕様を書く」のとおりに、短いデザイン仕様を `factory-design.md` に書く（1行目は `# デザイン仕様`、すぐ下に「目標の絵」）
+            5. 「使う人」と「使う場面」を、2〜4行の箇条書きで `factory-context.md` に書く（仕様書の「前提」に入る）
+            6. 3D・動きの道具を使うときだけ、`factory-libs.txt` に1行1つで書く
+            このあと、別のAI（審査役）が画像だけで採点します。ほかのファイルは作らない・変えない（`factory-proto/` は試作・写真・画像の置き場。`.taste-skill/` は作業用で残らない）。
+          claude_args: '--model opus --max-turns 120 --allowedTools "Read,Write,Edit,Glob,Grep,Skill,WebSearch,WebFetch,Bash(node .claude/skills/taste-skill/scripts/draw.mjs:*),Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),Bash(node .github/scripts/shot.mjs:*),Bash(.github/scripts/fetch-photos.sh:*)"'
+      # 審査役 1 回目：仕様・試作の HTML・前の採点を隠して、画像だけを見せる（作った側の意図を読み込ませない）
+      - name: 審査役に見せない物を隠す（1 回目）
+        id: hide1
         if: steps.designer.outcome == 'success'
+        run: .github/scripts/factory-blind.sh hide
+      - uses: anthropics/claude-code-action@v1
+        id: critic1
+        continue-on-error: true
+        if: steps.hide1.outcome == 'success'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            あなたはデザイン部門の検査役です。別の担当が描いた試作（`factory-proto/`）と、書いたデザイン仕様（`factory-design.md`）を検査して、直してください。
+            あなたは、厳しいことで知られるアートディレクターです。新しいWebサービスの試作を、**画像だけ**で審査してください。
+            作った人の説明・仕様・コードは見せません（見ないでください。開いてよいのは `factory-proto/shots/` の画像と `factory-proto/photos/` の写真だけ）。
             - サービス名：${{ needs.plan.outputs.name }}
             - 説明：${{ needs.plan.outputs.desc }}
             - 元のメモ：${{ needs.plan.outputs.memo }}
@@ -161,18 +160,145 @@ jobs:
               ${{ needs.plan.outputs.detail }}
 
             手順：
-            1. `.github/factory/design-department.md` と、スキル frontend-design（`.claude/skills/frontend-design/SKILL.md`）を読む
-            2. 検査に使う物を読む：`.claude/skills/web-design-guidelines/` の SKILL.md と guidelines.md、taste-skill の
-               `.claude/skills/taste-skill/references/tells.md`（道具の型なら `references/app-screens.md` も）、`.github/factory/references/README.md`
-            3. まず絵で見る：`node .github/scripts/shot.mjs --out factory-proto/shots factory-proto/*.html` で撮り直し、画像を全部 Read で見る。
-               進め方の「4. 試作を描いて見る」の 5 の項目と、taste-skill の `references/critique.md` で、絵として良いかを採点する（点数を書き出す）
-            4. `factory-design.md` を、進め方の「6. 検査する」の項目で1つずつ確かめる。`factory-libs.txt` があれば、それも確かめる
-            5. だめな所を、試作（`factory-proto/*.html`）と `factory-design.md` の両方で直す（書き方の形と節の順は守る。1行目は `# デザイン仕様` のまま）。
-               試作を直したら撮り直して見る（最大3回）。最後は必ず撮り直して、`factory-proto/shots/` を最後の試作の画像にしておく。
-               GSAP・Lenis が要らないと判断したら、`factory-libs.txt` の中身を空にする
-            6. 最後に `## 検査` の節を足し、絵の点数（直す前と後）、確かめた項目、直した所を箇条書きで短く書く
-            ほかのファイルは作らない・変えない（`factory-proto/`・`factory-context.md`・`factory-libs.txt` は直してよい）。
-          claude_args: '--model opus --max-turns 60 --allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),Bash(node .github/scripts/shot.mjs:*)"'
+            1. `factory-proto/shots/` の画像を全部 Read で見る（名前の末尾が幅：390 はスマホ、1440・1920 は PC）
+            2. 賞を取るサイト（Awwwards の Site of the Day）と並べたつもりで、10点満点で採点する。目安：
+               9＝賞を取る／8＝プロの仕事で、記憶に残る／7＝きれいだが既視感がある／6＝テンプレートっぽい／5以下＝AIが作った感・素人っぽい
+               見る所：一目で何のサイトか・誰のための物か／主役が強いか／構図と余白と揃い／文字の質と階層／色と質感（安っぽいぼかし・のっぺりした面・ありがちな飾りは減点）／
+               題材らしさ（ほかのサービスに名前を変えても成り立つなら減点）／スマホでも成立するか／メモで見た目のスタイルが指定されていれば、本当にそのスタイルに見えるか
+               甘くしない。迷ったら低い方にする
+            3. `factory-critique.md` に書く（このファイルだけを書く）。形：
+               1行目 `点数: 7.5`（数字だけ）、2行目 `判定: 通す`（8.0 以上）か `判定: 直す`（8.0 未満）
+               そのあと `## 直すこと` に、効く順に最大6個。どの画像の・どこが・なぜだめで・どう変えるとよいかを具体的に。方向そのものが弱いなら、1個目にそう書く
+          claude_args: '--model opus --max-turns 25 --allowedTools "Read,Glob,Write"'
+      - name: 隠した物を戻して、点数を読む（1 回目）
+        id: judge1
+        if: always() && steps.hide1.outcome == 'success'
+        run: |
+          .github/scripts/factory-blind.sh restore
+          score=$(grep -m1 -E '^点数' factory-critique.md 2> /dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)
+          echo "審査役の点数：${score:-なし}"
+          # 点数が読めない（審査役が失敗した）ときは、直しに回さずに進める
+          if [ -n "$score" ] && awk -v s="$score" 'BEGIN { exit !(s < 8.0) }'; then echo "redo=true" >> "$GITHUB_OUTPUT"; else echo "redo=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: anthropics/claude-code-action@v1
+        id: fix1
+        continue-on-error: true
+        if: steps.judge1.outputs.redo == 'true'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたはこのサービスのデザイン部門です。描いた試作を、仕様も見ない別のAI（審査役）が画像だけで審査し、8点に届きませんでした。
+            - サービス名：${{ needs.plan.outputs.name }}
+            - 説明：${{ needs.plan.outputs.desc }}
+            - 元のメモ：${{ needs.plan.outputs.memo }}
+            - 詳しいメモ（載せたい中身・見た目のスタイルなど。あればこれも守る）：
+              ${{ needs.plan.outputs.detail }}
+
+            1. `.github/factory/design-department.md` の「審査役」の節と、`factory-critique.md`（審査の結果）を読む
+            2. 指摘を効く順に直す。試作（`factory-proto/*.html`）を直し、`node .github/scripts/shot.mjs --out factory-proto/shots factory-proto/*.html` で撮り直して、画像を全部 Read で見る。
+               方向そのものが弱いと言われたら、小手先で直さず、方向から描き直してよい（写真・シェーダー・3D も使ってよい）
+            3. `factory-design.md` を、最後の試作に合わせて直す。`factory-libs.txt` も要れば直す
+            ほかのファイルは作らない（`factory-critique.md` は消さない・書き換えない）。
+          claude_args: '--model opus --max-turns 70 --allowedTools "Read,Write,Edit,Glob,Grep,Skill,WebSearch,WebFetch,Bash(node .claude/skills/taste-skill/scripts/draw.mjs:*),Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),Bash(node .github/scripts/shot.mjs:*),Bash(.github/scripts/fetch-photos.sh:*)"'
+      # 審査役 2 回目：仕様・試作の HTML・前の採点を隠して、画像だけを見せる（作った側の意図を読み込ませない）
+      - name: 審査役に見せない物を隠す（2 回目）
+        id: hide2
+        if: steps.fix1.outcome == 'success'
+        run: .github/scripts/factory-blind.sh hide
+      - uses: anthropics/claude-code-action@v1
+        id: critic2
+        continue-on-error: true
+        if: steps.hide2.outcome == 'success'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたは、厳しいことで知られるアートディレクターです。新しいWebサービスの試作を、**画像だけ**で審査してください。
+            作った人の説明・仕様・コードは見せません（見ないでください。開いてよいのは `factory-proto/shots/` の画像と `factory-proto/photos/` の写真だけ）。
+            - サービス名：${{ needs.plan.outputs.name }}
+            - 説明：${{ needs.plan.outputs.desc }}
+            - 元のメモ：${{ needs.plan.outputs.memo }}
+            - 詳しいメモ（載せたい中身・見た目のスタイルなど。あればこれも守る）：
+              ${{ needs.plan.outputs.detail }}
+
+            手順：
+            1. `factory-proto/shots/` の画像を全部 Read で見る（名前の末尾が幅：390 はスマホ、1440・1920 は PC）
+            2. 賞を取るサイト（Awwwards の Site of the Day）と並べたつもりで、10点満点で採点する。目安：
+               9＝賞を取る／8＝プロの仕事で、記憶に残る／7＝きれいだが既視感がある／6＝テンプレートっぽい／5以下＝AIが作った感・素人っぽい
+               見る所：一目で何のサイトか・誰のための物か／主役が強いか／構図と余白と揃い／文字の質と階層／色と質感（安っぽいぼかし・のっぺりした面・ありがちな飾りは減点）／
+               題材らしさ（ほかのサービスに名前を変えても成り立つなら減点）／スマホでも成立するか／メモで見た目のスタイルが指定されていれば、本当にそのスタイルに見えるか
+               甘くしない。迷ったら低い方にする
+            3. `factory-critique.md` に書く（このファイルだけを書く）。形：
+               1行目 `点数: 7.5`（数字だけ）、2行目 `判定: 通す`（8.0 以上）か `判定: 直す`（8.0 未満）
+               そのあと `## 直すこと` に、効く順に最大6個。どの画像の・どこが・なぜだめで・どう変えるとよいかを具体的に。方向そのものが弱いなら、1個目にそう書く
+          claude_args: '--model opus --max-turns 25 --allowedTools "Read,Glob,Write"'
+      - name: 隠した物を戻して、点数を読む（2 回目）
+        id: judge2
+        if: always() && steps.hide2.outcome == 'success'
+        run: |
+          .github/scripts/factory-blind.sh restore
+          score=$(grep -m1 -E '^点数' factory-critique.md 2> /dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)
+          echo "審査役の点数：${score:-なし}"
+          # 点数が読めない（審査役が失敗した）ときは、直しに回さずに進める
+          if [ -n "$score" ] && awk -v s="$score" 'BEGIN { exit !(s < 8.0) }'; then echo "redo=true" >> "$GITHUB_OUTPUT"; else echo "redo=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: anthropics/claude-code-action@v1
+        id: fix2
+        continue-on-error: true
+        if: steps.judge2.outputs.redo == 'true'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたはこのサービスのデザイン部門です。描いた試作を、仕様も見ない別のAI（審査役）が画像だけで審査し、8点に届きませんでした。
+            - サービス名：${{ needs.plan.outputs.name }}
+            - 説明：${{ needs.plan.outputs.desc }}
+            - 元のメモ：${{ needs.plan.outputs.memo }}
+            - 詳しいメモ（載せたい中身・見た目のスタイルなど。あればこれも守る）：
+              ${{ needs.plan.outputs.detail }}
+
+            1. `.github/factory/design-department.md` の「審査役」の節と、`factory-critique.md`（審査の結果）を読む
+            2. 指摘を効く順に直す。試作（`factory-proto/*.html`）を直し、`node .github/scripts/shot.mjs --out factory-proto/shots factory-proto/*.html` で撮り直して、画像を全部 Read で見る。
+               方向そのものが弱いと言われたら、小手先で直さず、方向から描き直してよい（写真・シェーダー・3D も使ってよい）
+            3. `factory-design.md` を、最後の試作に合わせて直す。`factory-libs.txt` も要れば直す
+            ほかのファイルは作らない（`factory-critique.md` は消さない・書き換えない）。
+          claude_args: '--model opus --max-turns 70 --allowedTools "Read,Write,Edit,Glob,Grep,Skill,WebSearch,WebFetch,Bash(node .claude/skills/taste-skill/scripts/draw.mjs:*),Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),Bash(node .github/scripts/shot.mjs:*),Bash(.github/scripts/fetch-photos.sh:*)"'
+      # 審査役 3 回目（最後の点数を残すだけ。直しには回さない）：仕様・試作の HTML・前の採点を隠して、画像だけを見せる（作った側の意図を読み込ませない）
+      - name: 審査役に見せない物を隠す（3 回目）
+        id: hide3
+        if: steps.fix2.outcome == 'success'
+        run: .github/scripts/factory-blind.sh hide
+      - uses: anthropics/claude-code-action@v1
+        id: critic3
+        continue-on-error: true
+        if: steps.hide3.outcome == 'success'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたは、厳しいことで知られるアートディレクターです。新しいWebサービスの試作を、**画像だけ**で審査してください。
+            作った人の説明・仕様・コードは見せません（見ないでください。開いてよいのは `factory-proto/shots/` の画像と `factory-proto/photos/` の写真だけ）。
+            - サービス名：${{ needs.plan.outputs.name }}
+            - 説明：${{ needs.plan.outputs.desc }}
+            - 元のメモ：${{ needs.plan.outputs.memo }}
+            - 詳しいメモ（載せたい中身・見た目のスタイルなど。あればこれも守る）：
+              ${{ needs.plan.outputs.detail }}
+
+            手順：
+            1. `factory-proto/shots/` の画像を全部 Read で見る（名前の末尾が幅：390 はスマホ、1440・1920 は PC）
+            2. 賞を取るサイト（Awwwards の Site of the Day）と並べたつもりで、10点満点で採点する。目安：
+               9＝賞を取る／8＝プロの仕事で、記憶に残る／7＝きれいだが既視感がある／6＝テンプレートっぽい／5以下＝AIが作った感・素人っぽい
+               見る所：一目で何のサイトか・誰のための物か／主役が強いか／構図と余白と揃い／文字の質と階層／色と質感（安っぽいぼかし・のっぺりした面・ありがちな飾りは減点）／
+               題材らしさ（ほかのサービスに名前を変えても成り立つなら減点）／スマホでも成立するか／メモで見た目のスタイルが指定されていれば、本当にそのスタイルに見えるか
+               甘くしない。迷ったら低い方にする
+            3. `factory-critique.md` に書く（このファイルだけを書く）。形：
+               1行目 `点数: 7.5`（数字だけ）、2行目 `判定: 通す`（8.0 以上）か `判定: 直す`（8.0 未満）
+               そのあと `## 直すこと` に、効く順に最大6個。どの画像の・どこが・なぜだめで・どう変えるとよいかを具体的に。方向そのものが弱いなら、1個目にそう書く
+          claude_args: '--model opus --max-turns 25 --allowedTools "Read,Glob,Write"'
+      - name: 隠した物を戻して、点数を読む（3 回目）
+        id: judge3
+        if: always() && steps.hide3.outcome == 'success'
+        run: |
+          .github/scripts/factory-blind.sh restore
+          score=$(grep -m1 -E '^点数' factory-critique.md 2> /dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)
+          echo "審査役の点数：${score:-なし}"
+          # 点数が読めない（審査役が失敗した）ときは、直しに回さずに進める
+          if [ -n "$score" ] && awk -v s="$score" 'BEGIN { exit !(s < 8.0) }'; then echo "redo=true" >> "$GITHUB_OUTPUT"; else echo "redo=false" >> "$GITHUB_OUTPUT"; fi
       - name: 書いた物を取っておく
         if: ${{ !cancelled() }}
         run: |
@@ -180,6 +306,12 @@ jobs:
           if [ -f factory-design.md ] && [ ! -L factory-design.md ]; then cp factory-design.md "$RUNNER_TEMP/design/design.md"; fi
           if [ -f factory-context.md ] && [ ! -L factory-context.md ]; then cp factory-context.md "$RUNNER_TEMP/design/context.md"; fi
           if [ -f factory-libs.txt ] && [ ! -L factory-libs.txt ]; then cp factory-libs.txt "$RUNNER_TEMP/design/libs.txt"; fi
+          if [ -f factory-critique.md ] && [ ! -L factory-critique.md ]; then cp factory-critique.md "$RUNNER_TEMP/design/critique.md"; fi
+          # 取った写真（試作で使った物だけを、build ジョブが入れる）
+          mkdir -p "$RUNNER_TEMP/design/photos"
+          for f in factory-proto/photos/*; do
+            if [ -f "$f" ] && [ ! -L "$f" ]; then cp "$f" "$RUNNER_TEMP/design/photos/"; fi
+          done
           # 試作と、その最後の画像（目標の絵）。形は build ジョブ（factory.sh）がもう一度確かめる
           mkdir -p "$RUNNER_TEMP/design/ref"
           for f in factory-proto/*.html factory-proto/shots/*.png; do
@@ -254,6 +386,8 @@ jobs:
           CONTEXT_FILE: ${{ runner.temp }}/design/context.md
           LIBS_FILE: ${{ runner.temp }}/design/libs.txt
           DESIGN_REF_DIR: ${{ runner.temp }}/design/ref
+          PHOTOS_DIR: ${{ runner.temp }}/design/photos
+          CRITIQUE_FILE: ${{ runner.temp }}/design/critique.md
         run: .github/scripts/factory.sh
 
   # AIが名前を決められなかったときも、黙って終わらない

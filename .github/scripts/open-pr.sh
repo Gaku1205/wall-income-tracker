@@ -2,7 +2,8 @@
 # 実装AIのあと：ブランチ claude/issue-<番号>-... から main へのPRを自動で作る。
 # PRの本文は、実装AIがIssueに書いた「Create PR」リンクの中身を使う（無ければ Closes #番号 だけ）。
 #
-# 環境変数：ISSUE（番号）、ISSUE_TITLE、AI_OUTCOME（実装AIの結果 success/failure）、EXECUTION_FILE（AIの実行記録。失敗の原因の分類に使う）
+# 環境変数：ISSUE（番号）、ISSUE_TITLE、AI_OUTCOME（実装AIの結果 success/failure）、EXECUTION_FILE（AIの実行記録。失敗の原因の分類に使う）、
+#   CRITIQUE_FILE（任意：審査役が画面の画像だけを見て書いた採点。PRの本文に添える）
 source "$(dirname "$0")/pipeline-lib.sh"
 set -e
 
@@ -71,6 +72,13 @@ if ! printf '%s' "$body" | grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #${I
   body="Closes #${ISSUE}
 
 ${body}"
+fi
+if [ -n "${CRITIQUE_FILE:-}" ] && [ -f "$CRITIQUE_FILE" ] && [ ! -L "$CRITIQUE_FILE" ]; then
+  body="${body}
+
+## 審査役（画面の画像だけを見る別のAI）の採点
+
+$(head -n 40 "$CRITIQUE_FILE" | cut -c1-500)"
 fi
 body="${body}
 

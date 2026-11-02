@@ -183,7 +183,7 @@ PY2
 )
 assert_eq "factory.yml の守り" "build-env,plan-no-factory,owner-only,template-only" "$result"
 
-echo "== デザイン部門：AIが動かせるコマンドは taste-skill の draw.mjs・inspect.mjs と撮影の shot.mjs だけ。動かす前にスキルと手順書を読み取り専用にする"
+echo "== デザイン部門：AIが動かせるコマンドは taste-skill の draw.mjs・inspect.mjs と撮影の shot.mjs、写真の fetch-photos.sh だけ。動かす前にスキルと手順書を読み取り専用にする"
 result=$(python3 - "$WORKFLOWS/factory.yml" <<'PY2'
 import sys, re, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["design"]["steps"]
@@ -200,7 +200,33 @@ out.append("chmod" if "chmod -R a-w .claude/skills .github" in steps[ro]["run"] 
 print(",".join(out))
 PY2
 )
-assert_eq "factory.yml のデザイン部門" "bash=node .claude/skills/taste-skill/scripts/draw.mjs:*|node .claude/skills/taste-skill/scripts/inspect.mjs:*|node .github/scripts/shot.mjs:*,ro-first,chmod" "$result"
+assert_eq "factory.yml のデザイン部門" "bash=.github/scripts/fetch-photos.sh:*|node .claude/skills/taste-skill/scripts/draw.mjs:*|node .claude/skills/taste-skill/scripts/inspect.mjs:*|node .github/scripts/shot.mjs:*,ro-first,chmod" "$result"
+
+echo "== 審査役：仕様と HTML を隠してから、画像だけを見る（読む・書くだけ。コマンドは動かせない）。採点のあとで戻す"
+result=$(python3 - "$WORKFLOWS" <<'PY2'
+import sys, yaml
+w = sys.argv[1]; out = []
+steps = yaml.safe_load(open(f"{w}/factory.yml"))["jobs"]["design"]["steps"]
+ids = [st.get("id") for st in steps]
+for n in (1, 2, 3):
+    c = steps[ids.index(f"critic{n}")]
+    h = steps[ids.index(f"hide{n}")]
+    j = steps[ids.index(f"judge{n}")]
+    ok = (ids.index(f"hide{n}") < ids.index(f"critic{n}") < ids.index(f"judge{n}")
+          and "factory-blind.sh hide" in h["run"] and "factory-blind.sh restore" in j["run"] and "always()" in j["if"]
+          and '--allowedTools "Read,Glob,Write"' in c["with"]["claude_args"])
+    out.append(f"critic{n}:" + ("ok" if ok else "ng"))
+for n in (1, 2):
+    f = steps[ids.index(f"fix{n}")]
+    out.append(f"fix{n}:" + ("ok" if f["if"] == f"steps.judge{n}.outputs.redo == 'true'" else "ng"))
+j = yaml.safe_load(open(f"{w}/claude-implement.yml"))["jobs"]["implement"]["steps"]
+jid = [st.get("id") for st in j]
+c = j[jid.index("critic")]
+out.append("implement-critic:" + ("ok" if '--allowedTools "Read,Glob,Write"' in c["with"]["claude_args"] and jid.index("review_shots") < jid.index("critic") < jid.index("review_judge") < jid.index("fix") else "ng"))
+print(",".join(out))
+PY2
+)
+assert_eq "目隠しの審査" "critic1:ok,critic2:ok,critic3:ok,fix1:ok,fix2:ok,implement-critic:ok" "$result"
 
 echo "== 「新サービス：」のIssue：テンプレート自身の企画・実装には回さない（工場が受け持つ）"
 result=$(python3 - "$WORKFLOWS" <<'PY2'
