@@ -42,6 +42,13 @@ PY
       assert_contains "$name：playwright のコマンドが表にある" "$row" "\`Bash(npx playwright test:*)\`"
       continue
     fi
+    # 画面の撮影のコマンドは、画面のあるアプリでだけ入る（作った画面を撮って見て直すため）
+    if [ "$tool" = '${{ steps.shots.outputs.allowed }}' ]; then
+      for t in "Bash(npm run build)" "Bash(node .github/scripts/shot.mjs:*)" "Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*)"; do
+        assert_contains "$name：撮影の $t が表にある" "$row" "\`$t\`"
+      done
+      continue
+    fi
     [ -z "$tool" ] && continue
     assert_contains "$name：$tool が表にある" "$row" "\`$tool\`"
   done <<< "$tools"
@@ -51,6 +58,9 @@ PY
     [ -z "$tool" ] && continue
     case "$tool" in "Bash(npm run test:visual)" | "Bash(npm run test:visual -- -g:*)" | "Bash(npm run test:visual -- --update-snapshots:*)" | "Bash(npm run test:visual -- -u:*)" | "Bash(npx playwright test:*)")
       if printf '%s\n' "$tools" | grep -qxF '${{ steps.visual.outputs.allowed }}'; then PASSED=$((PASSED + 1)); continue; fi ;;
+    esac
+    case "$tool" in "Bash(npm run build)" | "Bash(node .github/scripts/shot.mjs:*)" | "Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*)")
+      if printf '%s\n' "$tools" | grep -qxF '${{ steps.shots.outputs.allowed }}'; then PASSED=$((PASSED + 1)); continue; fi ;;
     esac
     if printf '%s\n' "$tools" | grep -qxF "$tool"; then PASSED=$((PASSED + 1)); else assert_eq "$name：表の $tool は、ワークフローにもある" "ある" "ない"; fi
   done <<< "$listed"

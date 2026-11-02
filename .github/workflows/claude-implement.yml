@@ -18,11 +18,11 @@ jobs:
     # テンプレート本体の「新サービス：」のIssueは工場（factory.yml）が受け持つ。ラベルが付いても、テンプレート自身には作らない
     if: >-
       github.event.label.name == 'ai:implement' &&
-      !(github.event.repository.is_template && (startsWith(github.event.issue.title, '新サービス：') || startsWith(github.event.issue.title, '新サービス:')))
+      !(github.event.repository.is_template && (startsWith(github.event.issue.title, '新サービス：') || startsWith(github.event.issue.title, '新サービス:') || contains(github.event.issue.labels.*.name, 'factory')))
     runs-on: ubuntu-latest
     outputs:
       outcome: ${{ steps.claude.outcome }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     concurrency:
       group: claude-implement-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -58,6 +58,30 @@ jobs:
       - name: 見た目のテスト用のブラウザを入れる
         if: steps.visual.outputs.enabled == 'true'
         run: npx playwright install --with-deps chromium
+      # 画面のあるアプリでは、AIが作った画面を本物のブラウザで撮って見て直せるようにする（.github/scripts/shot.mjs。ubuntu-latest の Chrome を使う）。
+      # 文字だけで作ると、揃うはずの列のずれ・重なり・空いた帯・弱い主役に気づけないため
+      - name: 画面を撮れるか
+        id: shots
+        run: |
+          enabled=false
+          if [ -n "${{ steps.stack.outputs.node }}" ] && [ -f package.json ] && [ -f .github/scripts/shot.mjs ] &&
+            [ -f .claude/skills/taste-skill/scripts/lib/cdp.mjs ] && [ "$(jq -r '.scripts.start != null' package.json)" = true ] &&
+            node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' &&
+            { command -v google-chrome > /dev/null || command -v chromium > /dev/null; }; then
+            enabled=true
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          if [ "$enabled" = true ]; then
+            echo "allowed=Bash(npm run build),Bash(node .github/scripts/shot.mjs:*),Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*)" >> "$GITHUB_OUTPUT"
+            echo "prompt=画面に触る作業では、確認コマンドが通ったあと、npm run build をしてから node .github/scripts/shot.mjs --serve / で画面を撮る（ほかのページはパスを並べる。押したり入力したりした後の場面は --steps で書く。使い方はそのファイルの先頭）。390・1440・1920 の幅の画像が .shots/ にできるので、全部 Read で見る。docs/design-ref/ に目標の絵（試作の画像）があれば見比べる。行をまたいで揃うはずの列や数字のずれ・重なり・何も無い大きな帯・左右の片寄り・はみ出し・入力済みに見える例の文字・目立たない主役を探し、目立つ問題の上位3つを直して撮り直す（最大3回）。.shots/ はコミットしない。Issue への報告に、撮って見た場面と直した所を短く書く。" >> "$GITHUB_OUTPUT"
+            # 撮った画像をコミットしないように（.gitignore は変えない）
+            echo "/.shots/" >> .git/info/exclude
+            # Ubuntu 24.04 は、Chrome の安全な囲い（sandbox）に要る仕組みを止めていることがあるので、使えるようにする
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 > /dev/null 2>&1 || true
+          else
+            echo "allowed=" >> "$GITHUB_OUTPUT"
+            echo "prompt=" >> "$GITHUB_OUTPUT"
+          fi
       # パイプラインの App（ボット）がラベル・コメントで起こした実行を、AIのアクションが断らないようにする。
       # AI自身（claude[bot]）は許さない（自分のコメントで自分を呼ぶ繰り返しを防ぐ）。Secret は使わない
       - name: 起こしたボットを許可に入れる
@@ -78,7 +102,7 @@ jobs:
           allowed_bots: ${{ steps.bots.outputs.list }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           label_trigger: "ai:implement"
-          claude_args: "--model ${{ env.MODEL }} --max-turns ${{ env.MAX_TURNS }} --allowedTools \"${{ steps.stack.outputs.allowed }},${{ steps.visual.outputs.allowed }},Bash(.github/scripts/tests/run-all.sh),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git fetch:*),Bash(git merge:*),Bash(git push:*),Bash(bash .github/scripts/tests/run-all.sh),Bash(shellcheck:*),Skill\" --disallowedTools \"Bash(npm run test:visual -- --update-snapshots:*),Bash(npm run test:visual -- -u:*),Bash(npx playwright test --update-snapshots:*),Bash(npx playwright test -u:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --force-with-lease:*),Bash(git rebase:*)\" --append-system-prompt \"push の前に、git fetch origin main と git merge origin/main で最新の main を取り込んでから、確認コマンドをもう一度通して push する。作業中に main のワークフローが更新されると、古い main のままの push は GitHub に拒否されるため。コンフリクトしたら両方の変更を残して解消する。.github/ のファイルは自分では変えない。見た目のテスト（test:visual）がある所では、npm run test:visual -- -g テスト名（または npx playwright test -g テスト名）で、自分で動かして位置や数値を確かめられる（基準の画像の撮り直しはしない）。\""
+          claude_args: "--model ${{ env.MODEL }} --max-turns ${{ env.MAX_TURNS }} --allowedTools \"${{ steps.stack.outputs.allowed }},${{ steps.visual.outputs.allowed }},${{ steps.shots.outputs.allowed }},Bash(.github/scripts/tests/run-all.sh),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git commit:*),Bash(git fetch:*),Bash(git merge:*),Bash(git push:*),Bash(bash .github/scripts/tests/run-all.sh),Bash(shellcheck:*),Skill\" --disallowedTools \"Bash(npm run test:visual -- --update-snapshots:*),Bash(npm run test:visual -- -u:*),Bash(npx playwright test --update-snapshots:*),Bash(npx playwright test -u:*),Bash(git push --force:*),Bash(git push -f:*),Bash(git push --force-with-lease:*),Bash(git rebase:*)\" --append-system-prompt \"push の前に、git fetch origin main と git merge origin/main で最新の main を取り込んでから、確認コマンドをもう一度通して push する。作業中に main のワークフローが更新されると、古い main のままの push は GitHub に拒否されるため。コンフリクトしたら両方の変更を残して解消する。.github/ のファイルは自分では変えない。見た目のテスト（test:visual）がある所では、npm run test:visual -- -g テスト名（または npx playwright test -g テスト名）で、自分で動かして位置や数値を確かめられる（基準の画像の撮り直しはしない）。${{ steps.shots.outputs.prompt }}\""
       # AIの結果（実行記録）を、データとして次のジョブに渡す。ここでは Secret を使わない
       - name: AIの結果を取っておく
         if: ${{ !cancelled() }}

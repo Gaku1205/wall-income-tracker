@@ -183,7 +183,7 @@ PY2
 )
 assert_eq "factory.yml の守り" "build-env,plan-no-factory,owner-only,template-only" "$result"
 
-echo "== デザイン部門：AIが動かせるコマンドは taste-skill の draw.mjs だけ。動かす前にスキルと手順書を読み取り専用にする"
+echo "== デザイン部門：AIが動かせるコマンドは taste-skill の draw.mjs・inspect.mjs と撮影の shot.mjs だけ。動かす前にスキルと手順書を読み取り専用にする"
 result=$(python3 - "$WORKFLOWS/factory.yml" <<'PY2'
 import sys, re, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["design"]["steps"]
@@ -200,7 +200,7 @@ out.append("chmod" if "chmod -R a-w .claude/skills .github" in steps[ro]["run"] 
 print(",".join(out))
 PY2
 )
-assert_eq "factory.yml のデザイン部門" "bash=node .claude/skills/taste-skill/scripts/draw.mjs:*,ro-first,chmod" "$result"
+assert_eq "factory.yml のデザイン部門" "bash=node .claude/skills/taste-skill/scripts/draw.mjs:*|node .claude/skills/taste-skill/scripts/inspect.mjs:*|node .github/scripts/shot.mjs:*,ro-first,chmod" "$result"
 
 echo "== 「新サービス：」のIssue：テンプレート自身の企画・実装には回さない（工場が受け持つ）"
 result=$(python3 - "$WORKFLOWS" <<'PY2'
@@ -209,13 +209,40 @@ w = sys.argv[1]
 out = []
 for f, job in (("claude-plan.yml", "plan"), ("claude-implement.yml", "implement")):
     cond = yaml.safe_load(open(f"{w}/{f}"))["jobs"][job]["if"]
-    out.append(f"{job}:" + ("guarded" if "is_template" in cond and "新サービス：" in cond and "新サービス:" in cond else "open"))
+    out.append(f"{job}:" + ("guarded" if "is_template" in cond and "新サービス：" in cond and "新サービス:" in cond and "'factory'" in cond else "open"))
 fj = yaml.safe_load(open(f"{w}/claude-plan.yml"))["jobs"].get("factory-issue")
-out.append("factory-issue:" + ("yes" if fj and "is_template" in fj["if"] else "no"))
+out.append("factory-issue:" + ("yes" if fj and "is_template" in fj["if"] and "'factory'" in fj["if"] else "no"))
+# 工場は最初に factory の印を付ける（題が書き換えられても、印で止まる）
+fp = yaml.safe_load(open(f"{w}/factory.yml"))["jobs"]["plan"]
+mark = [st for st in fp["steps"] if st.get("name") == "工場の印を付ける"]
+out.append("mark:" + ("yes" if mark and "labels[]=factory" in mark[0]["run"] and fp["permissions"].get("issues") == "write" else "no"))
 print(",".join(out))
 PY2
 )
-assert_eq "企画・実装は受けず、ラベルを外す" "plan:guarded,implement:guarded,factory-issue:yes" "$result"
+assert_eq "企画・実装は受けず、ラベルを外す" "plan:guarded,implement:guarded,factory-issue:yes,mark:yes" "$result"
+
+echo "== 実装AI：画面を撮って見て直せる（撮影・ビルド・測るだけを許す。撮った画像はコミットしない）"
+result=$(python3 - "$WORKFLOWS" <<'PY2'
+import sys, yaml, re
+w = sys.argv[1]; out = []
+j = yaml.safe_load(open(f"{w}/claude-implement.yml"))["jobs"]["implement"]
+st = [s for s in j["steps"] if s.get("id") == "shots"]
+args = [s for s in j["steps"] if "claude-code-action" in s.get("uses", "")][0]["with"]["claude_args"]
+run = st[0]["run"] if st else ""
+allowed = re.search(r'echo "allowed=(Bash[^"]*)"', run)
+out.append("allowed=" + (allowed.group(1) if allowed else "none"))
+out.append("args:" + ("ok" if "${{ steps.shots.outputs.allowed }}" in args and "${{ steps.shots.outputs.prompt }}" in args else "ng"))
+out.append("exclude:" + ("ok" if "/.shots/" in run and ".git/info/exclude" in run else "ng"))
+out.append("order:" + ("ok" if st and j["steps"].index(st[0]) < [i for i, s in enumerate(j["steps"]) if "claude-code-action" in s.get("uses", "")][0] else "ng"))
+d = yaml.safe_load(open(f"{w}/factory.yml"))["jobs"]["design"]
+up = [s for s in d["steps"] if s.get("name") == "書いた物を取っておく"][0]["run"]
+b = yaml.safe_load(open(f"{w}/factory.yml"))["jobs"]["build"]["steps"]
+env = [s for s in b if s.get("name") == "新しいサービスを作る"][0]["env"]
+out.append("ref:" + ("ok" if "factory-proto/shots/*.png" in up and "DESIGN_REF_DIR" in env else "ng"))
+print(",".join(out))
+PY2
+)
+assert_eq "撮影の扱い" "allowed=Bash(npm run build),Bash(node .github/scripts/shot.mjs:*),Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),args:ok,exclude:ok,order:ok,ref:ok" "$result"
 
 echo "== 見た目のテスト：AIは動かせるが基準の画像は撮り直せない。撮り直しが失敗したらAIに直させる"
 result=$(python3 - "$WORKFLOWS" <<'PY2'

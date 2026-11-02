@@ -209,4 +209,22 @@ assert_not_contains "Python には写さない" "$(cat "$T/calls.log")" "secret 
 run_factory vt-none nextjs "説明" VERCEL_TOKEN=v > /dev/null
 assert_contains "鍵が無ければ vercel.json は今までどおり" "$(file_in o/vt-none vercel.json | jq -c .git.deploymentEnabled)" "claude/*"
 
+echo "== デザイン部門の試作と画像（目標の絵）：決まった形の物だけを docs/design-ref/ に入れ、最初のIssueで見比べるよう頼む"
+R="$T/ref"; rm -rf "$R"; mkdir -p "$R"
+printf '\x89PNG\r\n\x1a\nrest' > "$R/01-empty-390.png"
+printf '\x89PNG\r\n\x1a\nrest' > "$R/01-empty-1440.png"
+printf '<!doctype html><title>試作</title>' > "$R/01-empty.html"
+printf 'not a png' > "$R/02-fake-390.png"
+printf '\x89PNG\r\n\x1a\nrest' > "$R/Bad_Name.png"
+printf 'x' > "$R/notes.txt"
+ln -s /etc/hostname "$R/03-link.html"
+run_factory ref-ok nextjs "説明" DESIGN_FILE="$T/design-ok.md" DESIGN_REF_DIR="$R" > /dev/null
+assert_eq "本物の PNG と HTML だけが入る" "01-empty-1440.png 01-empty-390.png 01-empty.html" \
+  "$(git --git-dir="$T/remotes/o/ref-ok.git" ls-tree --name-only main docs/design-ref/ | xargs -n1 basename | sort | xargs)"
+assert_contains "結果に書く（枚数は画像だけ）" "$(cat "$T/comment.txt")" "その画像 2 枚を目標の絵として docs/design-ref/ に入れた"
+assert_contains "最初のIssueで、目標の絵と見比べるよう頼む" "$(cat "$T/calls.log")" "docs/design-ref/ の試作の画像を目標の絵に"
+run_factory ref-nodesign nextjs "説明" DESIGN_FILE="$T/design-bad.md" DESIGN_REF_DIR="$R" > /dev/null
+assert_eq "デザイン仕様が雛形のままなら入れない" "" "$(file_in o/ref-nodesign docs/design-ref/01-empty.html)"
+assert_not_contains "そのときは目標の絵を頼まない" "$(cat "$T/calls.log")" "design-ref"
+
 finish

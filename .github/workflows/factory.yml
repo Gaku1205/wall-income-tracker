@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      issues: read
+      issues: write
       id-token: write
     outputs:
       name: ${{ steps.check.outputs.name }}
@@ -27,6 +27,12 @@ jobs:
       desc: ${{ steps.check.outputs.desc }}
       memo: ${{ steps.check.outputs.memo }}
     steps:
+      # 工場のIssueの印。題が書き換えられても、テンプレート自身で企画・実装が走らないようにする（claude-plan.yml・claude-implement.yml が見る）
+      - name: 工場の印を付ける
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/labels" -f "labels[]=factory" > /dev/null || echo "::warning::factory の印を付けられませんでした"
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
@@ -75,14 +81,15 @@ jobs:
             echo "memo<<MEMO_END"; printf '%s\n' "$MEMO"; echo "MEMO_END"; } >> "$GITHUB_OUTPUT"
 
   # デザイン部門（Next.js のときだけ）：好みではなく、使う場面の分析からデザイン仕様を決める（.github/factory/design-department.md）。
-  # 道具：スキル frontend-design・taste-skill（方向を配る draw.mjs だけ動かしてよい）・web-design-guidelines、デザインの参考（.github/factory/references/）。
-  # 1人目が場面を分析して仕様を書き、2人目が別の目で検査して直す。型が「鑑賞・作品・体験」なら GSAP・Lenis を入れるかも決める（factory-libs.txt）。
+  # 道具：スキル frontend-design・taste-skill（方向を配る draw.mjs と、測る inspect.mjs だけ動かしてよい）・web-design-guidelines、デザインの参考（.github/factory/references/）、
+  # 撮影（.github/scripts/shot.mjs）。1人目が場面を分析し、主な場面の試作を HTML で描いて撮り、画像を見て直してから仕様を書く。
+  # 2人目が別の目で、画像と仕様を検査して直す。試作とその画像は docs/design-ref/ に入り、実装の目標の絵になる。型が「鑑賞・作品・体験」なら GSAP・Lenis を入れるかも決める（factory-libs.txt）。
   # AIはファイルを書くだけ（鍵は持たない）。書いた物は build ジョブが形を確かめてから使う
   design:
     needs: plan
     if: needs.plan.outputs.stack == 'nextjs'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -90,13 +97,18 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      # taste-skill の draw.mjs は Node 22 以上が要る
+      # taste-skill の draw.mjs・inspect.mjs と撮影（shot.mjs）は Node 22 以上が要る。撮影は ubuntu-latest に入っている Chrome を使う
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      # AIが動かしてよいスクリプト（draw.mjs）や手順書を、AI自身が書き換えられないようにする
+      # AIが動かしてよいスクリプト（draw.mjs・inspect.mjs・shot.mjs）や手順書を、AI自身が書き換えられないようにする
       - name: スキルと手順書を読み取り専用にする
         run: chmod -R a-w .claude/skills .github
+      # 撮影（shot.mjs・inspect.mjs）で Chrome を動かす。Ubuntu 24.04 は、Chrome の安全な囲い（sandbox）に要る仕組みを止めていることがあるので、使えるようにする
+      - name: 撮影の準備
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 > /dev/null 2>&1 || true
+          google-chrome --version || echo "::warning::Chrome が見つかりません（試作を撮れないので、デザイン部門は文章だけで決めます）"
       - uses: anthropics/claude-code-action@v1
         id: designer
         continue-on-error: true
@@ -116,11 +128,15 @@ jobs:
             5. 進め方の「0. 使う道具」のとおりに、taste-skill（`.claude/skills/taste-skill/SKILL.md` の最初の注意と、型に合う所）を読み、
                `node .claude/skills/taste-skill/scripts/draw.mjs` で方向を配ってもらって選ぶ。`.github/factory/references/`（README.md と INDEX.md）から
                同じ型のサイトを2〜3個選んで、仕組みだけを読む。`.claude/skills/web-design-guidelines/` の SKILL.md と guidelines.md を読む
-            6. 「3. 設計する」「4. 書き方」のとおりに、このサービスのデザイン仕様を `factory-design.md` に書く（1行目は `# デザイン仕様`）
-            7. 使う場面のうち「使う人」と「使う場面」を、2〜4行の箇条書きで `factory-context.md` に書く（仕様書の「前提」に入る）
-            8. 型が「鑑賞・作品・体験」で、進め方の「GSAP・Lenis を入れるか」で入れると決めたときだけ、`factory-libs.txt` に1行1つで書く
-            ほかのファイルは作らない・変えない（`.taste-skill/` は draw.mjs が作る作業用の物で、残らない）。
-          claude_args: '--model opus --max-turns 40 --allowedTools "Read,Write,Glob,Grep,Skill,Bash(node .claude/skills/taste-skill/scripts/draw.mjs:*)"'
+            6. 「3. 設計する」で決めたら、文章を書く前に「4. 試作を描いて見る」をする：主な場面を2〜5個、1場面1ファイルの HTML で
+               `factory-proto/NN-<英小文字の名前>.html` に描き、`node .github/scripts/shot.mjs --out factory-proto/shots factory-proto/*.html` で撮り、
+               画像を全部 Read で見て、taste-skill の `references/critique.md` で採点し、上位3つを直して撮り直す（最大3回）。
+               画像を見ないまま次に進まない
+            7. 「5. 書き方」のとおりに、最後の試作と同じ画面になるデザイン仕様を `factory-design.md` に書く（1行目は `# デザイン仕様`、すぐ下に「目標の絵」）
+            8. 使う場面のうち「使う人」と「使う場面」を、2〜4行の箇条書きで `factory-context.md` に書く（仕様書の「前提」に入る）
+            9. 型が「鑑賞・作品・体験」で、進め方の「GSAP・Lenis を入れるか」で入れると決めたときだけ、`factory-libs.txt` に1行1つで書く
+            ほかのファイルは作らない・変えない（`factory-proto/` は試作の置き場。`.taste-skill/` は draw.mjs・inspect.mjs が作る作業用の物で、残らない）。
+          claude_args: '--model opus --max-turns 100 --allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(node .claude/skills/taste-skill/scripts/draw.mjs:*),Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),Bash(node .github/scripts/shot.mjs:*)"'
       - uses: anthropics/claude-code-action@v1
         id: inspector
         continue-on-error: true
@@ -128,7 +144,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            あなたはデザイン部門の検査役です。別の担当が書いた、新しいサービスのデザイン仕様（`factory-design.md`）を検査して、直してください。
+            あなたはデザイン部門の検査役です。別の担当が描いた試作（`factory-proto/`）と、書いたデザイン仕様（`factory-design.md`）を検査して、直してください。
             - サービス名：${{ needs.plan.outputs.name }}
             - 説明：${{ needs.plan.outputs.desc }}
             - 元のメモ：${{ needs.plan.outputs.memo }}
@@ -137,12 +153,15 @@ jobs:
             1. `.github/factory/design-department.md` と、スキル frontend-design（`.claude/skills/frontend-design/SKILL.md`）を読む
             2. 検査に使う物を読む：`.claude/skills/web-design-guidelines/` の SKILL.md と guidelines.md、taste-skill の
                `.claude/skills/taste-skill/references/tells.md`（道具の型なら `references/app-screens.md` も）、`.github/factory/references/README.md`
-            3. `factory-design.md` を、進め方の「5. 検査する」の項目で1つずつ確かめる。`factory-libs.txt` があれば、それも確かめる
-            4. だめな所を `factory-design.md` の中で直す（書き方の形と節の順は守る。1行目は `# デザイン仕様` のまま）。
+            3. まず絵で見る：`node .github/scripts/shot.mjs --out factory-proto/shots factory-proto/*.html` で撮り直し、画像を全部 Read で見る。
+               進め方の「4. 試作を描いて見る」の 5 の項目と、taste-skill の `references/critique.md` で、絵として良いかを採点する（点数を書き出す）
+            4. `factory-design.md` を、進め方の「6. 検査する」の項目で1つずつ確かめる。`factory-libs.txt` があれば、それも確かめる
+            5. だめな所を、試作（`factory-proto/*.html`）と `factory-design.md` の両方で直す（書き方の形と節の順は守る。1行目は `# デザイン仕様` のまま）。
+               試作を直したら撮り直して見る（最大3回）。最後は必ず撮り直して、`factory-proto/shots/` を最後の試作の画像にしておく。
                GSAP・Lenis が要らないと判断したら、`factory-libs.txt` の中身を空にする
-            5. 最後に `## 検査` の節を足し、確かめた項目と直した所を箇条書きで短く書く
-            ほかのファイルは作らない・変えない（`factory-context.md` と `factory-libs.txt` は直してよい）。
-          claude_args: '--model opus --max-turns 20 --allowedTools "Read,Write,Edit,Glob,Grep,Skill"'
+            6. 最後に `## 検査` の節を足し、絵の点数（直す前と後）、確かめた項目、直した所を箇条書きで短く書く
+            ほかのファイルは作らない・変えない（`factory-proto/`・`factory-context.md`・`factory-libs.txt` は直してよい）。
+          claude_args: '--model opus --max-turns 60 --allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),Bash(node .github/scripts/shot.mjs:*)"'
       - name: 書いた物を取っておく
         if: ${{ !cancelled() }}
         run: |
@@ -150,6 +169,11 @@ jobs:
           if [ -f factory-design.md ] && [ ! -L factory-design.md ]; then cp factory-design.md "$RUNNER_TEMP/design/design.md"; fi
           if [ -f factory-context.md ] && [ ! -L factory-context.md ]; then cp factory-context.md "$RUNNER_TEMP/design/context.md"; fi
           if [ -f factory-libs.txt ] && [ ! -L factory-libs.txt ]; then cp factory-libs.txt "$RUNNER_TEMP/design/libs.txt"; fi
+          # 試作と、その最後の画像（目標の絵）。形は build ジョブ（factory.sh）がもう一度確かめる
+          mkdir -p "$RUNNER_TEMP/design/ref"
+          for f in factory-proto/*.html factory-proto/shots/*.png; do
+            if [ -f "$f" ] && [ ! -L "$f" ]; then cp "$f" "$RUNNER_TEMP/design/ref/"; fi
+          done
           touch "$RUNNER_TEMP/design/.keep"
       - uses: actions/upload-artifact@v6
         if: ${{ !cancelled() }}
@@ -217,6 +241,7 @@ jobs:
           DESIGN_FILE: ${{ runner.temp }}/design/design.md
           CONTEXT_FILE: ${{ runner.temp }}/design/context.md
           LIBS_FILE: ${{ runner.temp }}/design/libs.txt
+          DESIGN_REF_DIR: ${{ runner.temp }}/design/ref
         run: .github/scripts/factory.sh
 
   # AIが名前を決められなかったときも、黙って終わらない
