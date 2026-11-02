@@ -227,4 +227,10 @@ run_factory ref-nodesign nextjs "説明" DESIGN_FILE="$T/design-bad.md" DESIGN_R
 assert_eq "デザイン仕様が雛形のままなら入れない" "" "$(file_in o/ref-nodesign docs/design-ref/01-empty.html)"
 assert_not_contains "そのときは目標の絵を頼まない" "$(cat "$T/calls.log")" "design-ref"
 
+echo "== 元のIssueの本文（詳しいメモ）は、最初のIssueの本文に添える"
+run_factory detail-ok nextjs "説明" MEMO_DETAIL="載せる作品：agent-desk と工場" > /dev/null
+assert_contains "詳しいメモが入る" "$(cat "$T/calls.log")" "載せる作品：agent-desk と工場"
+run_factory detail-none nextjs "説明" > /dev/null
+assert_not_contains "無ければ節を作らない" "$(cat "$T/calls.log")" "詳しいメモ"
+
 finish

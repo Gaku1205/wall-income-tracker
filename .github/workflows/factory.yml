@@ -26,6 +26,7 @@ jobs:
       stack: ${{ steps.check.outputs.stack }}
       desc: ${{ steps.check.outputs.desc }}
       memo: ${{ steps.check.outputs.memo }}
+      detail: ${{ steps.memo.outputs.detail }}
     steps:
       # 工場のIssueの印。題が書き換えられても、テンプレート自身で企画・実装が走らないようにする（claude-plan.yml・claude-implement.yml が見る）
       - name: 工場の印を付ける
@@ -40,9 +41,13 @@ jobs:
         id: memo
         env:
           TITLE: ${{ github.event.issue.title }}
+          BODY: ${{ github.event.issue.body }}
         run: |
           memo="${TITLE#新サービス：}"; memo="${memo#新サービス:}"; memo="$(printf '%s' "$memo" | sed 's/^[[:space:]]*//')"
           { echo 'memo<<MEMO_END'; printf '%s\n' "$memo"; echo 'MEMO_END'; } >> "$GITHUB_OUTPUT"
+          # Issue の本文は「詳しいメモ」（載せたい中身・見た目のスタイルなど。任意、3000文字まで）
+          detail="$(printf '%s' "$BODY" | tr -d '\r' | grep -v '^DETAIL_END$' | head -c 3000 | iconv -c -f utf-8 -t utf-8)"
+          { echo 'detail<<DETAIL_END'; printf '%s\n' "$detail"; echo 'DETAIL_END'; } >> "$GITHUB_OUTPUT"
       # AIは名前・言語・説明を決めて、ファイルに書くだけ（ほかの操作は許さない。鍵も渡さない）
       - uses: anthropics/claude-code-action@v1
         id: claude
@@ -52,6 +57,8 @@ jobs:
           prompt: |
             オーナーが、新しく作りたいサービスを1行のメモに書きました。
             メモ：${{ steps.memo.outputs.memo }}
+            詳しいメモ（あれば）：
+            ${{ steps.memo.outputs.detail }}
 
             このサービスのリポジトリを作るために、次の3つを決め、`factory-plan.json` に JSON で書いてください（ほかのファイルは作らない）。
             {"name": "...", "stack": "...", "description": "..."}
@@ -119,6 +126,8 @@ jobs:
             - サービス名：${{ needs.plan.outputs.name }}
             - 説明：${{ needs.plan.outputs.desc }}
             - 元のメモ：${{ needs.plan.outputs.memo }}
+            - 詳しいメモ（載せたい中身・見た目のスタイルなど。あればこれも守る）：
+              ${{ needs.plan.outputs.detail }}
 
             手順：
             1. `.github/factory/design-department.md`（デザイン部門の進め方）を全部読む
@@ -136,7 +145,7 @@ jobs:
             8. 使う場面のうち「使う人」と「使う場面」を、2〜4行の箇条書きで `factory-context.md` に書く（仕様書の「前提」に入る）
             9. 型が「鑑賞・作品・体験」で、進め方の「GSAP・Lenis を入れるか」で入れると決めたときだけ、`factory-libs.txt` に1行1つで書く
             ほかのファイルは作らない・変えない（`factory-proto/` は試作の置き場。`.taste-skill/` は draw.mjs・inspect.mjs が作る作業用の物で、残らない）。
-          claude_args: '--model opus --max-turns 100 --allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(node .claude/skills/taste-skill/scripts/draw.mjs:*),Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),Bash(node .github/scripts/shot.mjs:*)"'
+          claude_args: '--model opus --max-turns 100 --allowedTools "Read,Write,Edit,Glob,Grep,Skill,WebSearch,WebFetch,Bash(node .claude/skills/taste-skill/scripts/draw.mjs:*),Bash(node .claude/skills/taste-skill/scripts/inspect.mjs:*),Bash(node .github/scripts/shot.mjs:*)"'
       - uses: anthropics/claude-code-action@v1
         id: inspector
         continue-on-error: true
@@ -148,6 +157,8 @@ jobs:
             - サービス名：${{ needs.plan.outputs.name }}
             - 説明：${{ needs.plan.outputs.desc }}
             - 元のメモ：${{ needs.plan.outputs.memo }}
+            - 詳しいメモ（載せたい中身・見た目のスタイルなど。あればこれも守る）：
+              ${{ needs.plan.outputs.detail }}
 
             手順：
             1. `.github/factory/design-department.md` と、スキル frontend-design（`.claude/skills/frontend-design/SKILL.md`）を読む
@@ -224,6 +235,7 @@ jobs:
           TEMPLATE: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
           MEMO: ${{ needs.plan.outputs.memo }}
+          MEMO_DETAIL: ${{ needs.plan.outputs.detail }}
           APP_NAME: ${{ needs.plan.outputs.name }}
           APP_STACK: ${{ needs.plan.outputs.stack }}
           APP_DESC: ${{ needs.plan.outputs.desc }}
