@@ -14,6 +14,7 @@
 #   APP_NAME・APP_STACK（nextjs か python）・APP_DESC（1行の説明）：AIが決めた物
 #   S_<名前>：写す秘密の値（S_CLAUDE_CODE_OAUTH_TOKEN など）、V_<名前>：写す変数の値（V_PIPELINE_APP_ID など）
 #   DESIGN_FILE・CONTEXT_FILE・LIBS_FILE（任意）：デザイン部門が書いたデザイン仕様・使う人と場面・入れる動きの道具（1行1つ）
+#   DESIGN_REF_DIR（任意）：デザイン部門が描いた試作（HTML）と、それを撮った画像（PNG）。docs/design-ref/ に入れ、実装とレビューの目標の絵にする
 #   VERCEL_TOKEN・VERCEL_TEAM_ID（任意）、COMMENT_TOKEN（元のIssueにコメントする鍵。無ければ GH_TOKEN）
 #   テスト用：FACTORY_GIT_URL（clone 先の書式。%s にリポジトリ名）、VERCEL_API、FACTORY_WAIT_SEC
 set -uo pipefail
@@ -157,6 +158,27 @@ PY3
       echo "DESIGN=bad" > "$work/design.flag"
     fi
   fi
+  # デザイン部門が描いた試作と、その画像（目標の絵）。デザイン仕様を使うときだけ、決まった形の物だけを入れる
+  # （名前は英小文字・数字・-、PNG は本物の PNG で 3MB まで、HTML は 300KB まで、合わせて 40 個・25MB まで）
+  if [ "$(cat "$work/design.flag" 2> /dev/null)" = DESIGN=yes ] && [ -n "${DESIGN_REF_DIR:-}" ] && [ -d "$DESIGN_REF_DIR" ] && [ ! -L "$DESIGN_REF_DIR" ]; then
+    count=0; total=0; pngs=0
+    for f in "$DESIGN_REF_DIR"/*; do
+      [ -f "$f" ] && [ ! -L "$f" ] || continue
+      base=$(basename "$f")
+      [[ "$base" =~ ^[a-z0-9][a-z0-9-]{0,60}\.(png|html)$ ]] || continue
+      size=$(wc -c < "$f")
+      case "$base" in
+        *.png) [ "$size" -le 3145728 ] && [ "$(head -c 8 "$f" | od -An -tx1 | tr -d ' \n')" = 89504e470d0a1a0a ] || continue ;;
+        *.html) [ "$size" -le 307200 ] || continue ;;
+      esac
+      [ "$count" -lt 40 ] && [ $((total + size)) -le 26214400 ] || continue
+      mkdir -p docs/design-ref
+      cp "$f" "docs/design-ref/$base"
+      count=$((count + 1)); total=$((total + size))
+      case "$base" in *.png) pngs=$((pngs + 1)) ;; esac
+    done
+    [ "$pngs" -gt 0 ] && echo "REF=$pngs" > "$work/ref.flag"
+  fi
   # デザイン部門が選んだ動きの道具（GSAP・Lenis）。デザイン仕様を使うときだけ、決まった3つの中からだけ入れる
   # （アプリの AI は依存パッケージを足せないので、作るときに工場が入れておく）
   if [ "$APP_STACK" = nextjs ] && [ "$(cat "$work/design.flag" 2> /dev/null)" = DESIGN=yes ] &&
@@ -210,6 +232,8 @@ case "$(cat "$work/design.flag" 2> /dev/null)" in
   DESIGN=yes) note "✅ デザイン部門：使う場面を分析して、このサービスのデザイン仕様（docs/design.md）を書き、別の目で検査した" ;;
   DESIGN=bad) note "⚠️ デザイン部門が書いたデザイン仕様の形が違ったので、雛形のままにした" ;;
 esac
+ref_line=$(grep '^REF=' "$work/ref.flag" 2> /dev/null | head -1)
+[ -n "$ref_line" ] && note "✅ デザイン部門が試作を描いて撮り、見て直した。その画像 ${ref_line#REF=} 枚を目標の絵として docs/design-ref/ に入れた"
 libs_line=$(grep '^LIBS=' "$work/libs.flag" 2> /dev/null | head -1)
 [ -n "$libs_line" ] && note "✅ デザイン部門が選んだ動きの道具を入れた：${libs_line#LIBS=}"
 grep -q '^LIBS_FAILED=' "$work/libs.flag" 2> /dev/null && note "⚠️ 動きの道具（GSAP・Lenis）を入れられませんでした（npm install が失敗。入れずに進めた）"
@@ -238,8 +262,10 @@ for _ in $(seq 1 36); do
   sleep "$WAIT"
 done
 [ "$labels" = yes ] || note "⚠️ Bootstrap のラベルがまだできていません（Actions の Bootstrap を見る）。Issue は先に作ります"
+look="見た目は docs/design.md のとおりに作ってください。"
+[ -n "$ref_line" ] && look="見た目は docs/design.md のとおりに作り、docs/design-ref/ の試作の画像を目標の絵にしてください（作った画面を撮って、試作と見比べて直す）。"
 first=$(gh api "repos/$NEW/issues" -f title="$MEMO" -f "labels[]=size:L" \
-  -f body="工場（${TEMPLATE}#${ISSUE}）で作ったサービスの、最初のメモです。企画AIが清書して、そのまま実装まで進めます。最初の画面を一から作る大きい作業なので size:L（強いモデル）にしています。見た目は docs/design.md のとおりに作ってください。" -q .number 2>&1) \
+  -f body="工場（${TEMPLATE}#${ISSUE}）で作ったサービスの、最初のメモです。企画AIが清書して、そのまま実装まで進めます。最初の画面を一から作る大きい作業なので size:L（強いモデル）にしています。${look}" -q .number 2>&1) \
   || fail "最初のIssueを作れませんでした"
 note "✅ 最初のIssue：https://github.com/$NEW/issues/$first（自動で企画に回る）"
 # 公開アドレス：Vercel が最初の公開でアドレスを決めるまで待って調べる（同じ名前がほかの人に使われていると、名前の後ろに文字が付く）
