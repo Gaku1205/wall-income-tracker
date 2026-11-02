@@ -16,6 +16,8 @@
 #   S_<名前>：写す秘密の値（S_CLAUDE_CODE_OAUTH_TOKEN など）、V_<名前>：写す変数の値（V_PIPELINE_APP_ID など）
 #   DESIGN_FILE・CONTEXT_FILE・LIBS_FILE（任意）：デザイン部門が書いたデザイン仕様・使う人と場面・入れる動きの道具（1行1つ）
 #   DESIGN_REF_DIR（任意）：デザイン部門が描いた試作（HTML）と、それを撮った画像（PNG）。docs/design-ref/ に入れ、実装とレビューの目標の絵にする
+#   PHOTOS_DIR（任意）：デザイン部門が取った写真（CC0・パブリックドメイン）と CREDITS.md。試作で使った物だけを public/photos/ に入れる
+#   CRITIQUE_FILE（任意）：審査役の最後の採点。点数を結果に書く
 #   VERCEL_TOKEN・VERCEL_TEAM_ID（任意）、COMMENT_TOKEN（元のIssueにコメントする鍵。無ければ GH_TOKEN）
 #   テスト用：FACTORY_GIT_URL（clone 先の書式。%s にリポジトリ名）、VERCEL_API、FACTORY_WAIT_SEC
 set -uo pipefail
@@ -175,12 +177,35 @@ PY3
       [ "$count" -lt 40 ] && [ $((total + size)) -le 26214400 ] || continue
       mkdir -p docs/design-ref
       cp "$f" "docs/design-ref/$base"
+      # 試作の写真は public/photos/ に入るので、docs/design-ref/ から見た場所に直す
+      case "$base" in *.html) sed -i 's#\(["(]\)photos/#\1../../public/photos/#g' "docs/design-ref/$base" ;; esac
       count=$((count + 1)); total=$((total + size))
       case "$base" in *.png) pngs=$((pngs + 1)) ;; esac
     done
     [ "$pngs" -gt 0 ] && echo "REF=$pngs" > "$work/ref.flag"
   fi
-  # デザイン部門が選んだ動きの道具（GSAP・Lenis）。デザイン仕様を使うときだけ、決まった3つの中からだけ入れる
+  # デザイン部門が取った写真：試作の HTML で使った物だけ、決まった形の物だけを入れる（1枚 5MB まで、12 枚まで）
+  if [ "$(cat "$work/design.flag" 2> /dev/null)" = DESIGN=yes ] && [ -n "${PHOTOS_DIR:-}" ] && [ -d "$PHOTOS_DIR" ] && [ ! -L "$PHOTOS_DIR" ] && [ -d docs/design-ref ]; then
+    photos=0
+    for f in "$PHOTOS_DIR"/*; do
+      [ -f "$f" ] && [ ! -L "$f" ] || continue
+      base=$(basename "$f")
+      [[ "$base" =~ ^[0-9]{2}-[a-z0-9-]{1,40}\.(jpg|png|webp)$ ]] || continue
+      [ "$(wc -c < "$f")" -le 5242880 ] || continue
+      case "$(head -c 12 "$f" | od -An -tx1 | tr -d ' \n')" in ffd8ff* | 89504e470d0a1a0a* | 52494646????????57454250) ;; *) continue ;; esac
+      grep -qF "photos/$base" docs/design-ref/*.html 2> /dev/null || continue
+      [ "$photos" -lt 12 ] || continue
+      mkdir -p public/photos
+      cp "$f" "public/photos/$base"
+      if [ -f "$PHOTOS_DIR/CREDITS.md" ] && [ ! -L "$PHOTOS_DIR/CREDITS.md" ]; then
+        [ -f public/photos/CREDITS.md ] || printf '%s\n\n' "# 写真の出どころ（どれも CC0 かパブリックドメイン。Openverse で探した物）" > public/photos/CREDITS.md
+        grep -F "\`$base\`" "$PHOTOS_DIR/CREDITS.md" | head -1 | cut -c1-400 >> public/photos/CREDITS.md
+      fi
+      photos=$((photos + 1))
+    done
+    [ "$photos" -gt 0 ] && echo "PHOTOS=$photos" > "$work/photos.flag"
+  fi
+  # デザイン部門が選んだ動き・3D の道具（GSAP・Lenis・three.js）。デザイン仕様を使うときだけ、決まった物の中からだけ入れる
   # （アプリの AI は依存パッケージを足せないので、作るときに工場が入れておく）
   if [ "$APP_STACK" = nextjs ] && [ "$(cat "$work/design.flag" 2> /dev/null)" = DESIGN=yes ] &&
     [ -n "${LIBS_FILE:-}" ] && [ -f "$LIBS_FILE" ] && [ ! -L "$LIBS_FILE" ] && [ "$(wc -c < "$LIBS_FILE")" -le 200 ]; then
@@ -191,6 +216,9 @@ PY3
         gsap) pkgs+=("gsap@^3" "@gsap/react@^2") ;;
         @gsap/react) pkgs+=("gsap@^3" "@gsap/react@^2") ;;
         lenis) pkgs+=("lenis@^1") ;;
+        three) pkgs+=("three@^0" "@types/three@^0") ;;
+        @react-three/fiber) pkgs+=("three@^0" "@types/three@^0" "@react-three/fiber@^9") ;;
+        @react-three/drei) pkgs+=("three@^0" "@types/three@^0" "@react-three/fiber@^9" "@react-three/drei@^10") ;;
         "") ;;
         *) echo "LIBS_SKIPPED=yes" >> "$work/libs.flag" ;;
       esac
@@ -235,10 +263,16 @@ case "$(cat "$work/design.flag" 2> /dev/null)" in
 esac
 ref_line=$(grep '^REF=' "$work/ref.flag" 2> /dev/null | head -1)
 [ -n "$ref_line" ] && note "✅ デザイン部門が試作を描いて撮り、見て直した。その画像 ${ref_line#REF=} 枚を目標の絵として docs/design-ref/ に入れた"
+photos_line=$(grep '^PHOTOS=' "$work/photos.flag" 2> /dev/null | head -1)
+[ -n "$photos_line" ] && note "✅ 試作で使った写真 ${photos_line#PHOTOS=} 枚（CC0・パブリックドメイン）を public/photos/ に入れた（出どころは public/photos/CREDITS.md）"
+if [ -n "${CRITIQUE_FILE:-}" ] && [ -f "$CRITIQUE_FILE" ] && [ ! -L "$CRITIQUE_FILE" ]; then
+  score=$(grep -m1 -E '^点数' "$CRITIQUE_FILE" | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)
+  [ -n "$score" ] && note "🧑‍⚖️ 審査役（画像だけを見る別のAI）の最後の点数：${score} / 10"
+fi
 libs_line=$(grep '^LIBS=' "$work/libs.flag" 2> /dev/null | head -1)
 [ -n "$libs_line" ] && note "✅ デザイン部門が選んだ動きの道具を入れた：${libs_line#LIBS=}"
-grep -q '^LIBS_FAILED=' "$work/libs.flag" 2> /dev/null && note "⚠️ 動きの道具（GSAP・Lenis）を入れられませんでした（npm install が失敗。入れずに進めた）"
-grep -q '^LIBS_SKIPPED=' "$work/libs.flag" 2> /dev/null && note "⚠️ デザイン部門が、決まった物（gsap・@gsap/react・lenis）以外の道具を書いていたので、それは入れなかった"
+grep -q '^LIBS_FAILED=' "$work/libs.flag" 2> /dev/null && note "⚠️ 動き・3D の道具を入れられませんでした（npm install が失敗。入れずに進めた）"
+grep -q '^LIBS_SKIPPED=' "$work/libs.flag" 2> /dev/null && note "⚠️ デザイン部門が、決まった物（gsap・@gsap/react・lenis・three・@react-three/fiber・@react-three/drei）以外の道具を書いていたので、それは入れなかった"
 
 # ---- 5. main を守る ----
 ruleset=$(jq -nc '{

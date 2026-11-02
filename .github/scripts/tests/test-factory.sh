@@ -183,7 +183,7 @@ assert_not_contains "決まった物以外は入れない" "$calls" "left-pad"
 pkg=$(file_in o/libs-ok package.json)
 assert_contains "package.json に入って push される" "$pkg" "// lenis@^1"
 assert_contains "結果に書く" "$(cat "$T/comment.txt")" "動きの道具を入れた：@gsap/react@^2 gsap@^3 lenis@^1"
-assert_contains "入れなかった物も書く" "$(cat "$T/comment.txt")" "決まった物（gsap・@gsap/react・lenis）以外"
+assert_contains "入れなかった物も書く" "$(cat "$T/comment.txt")" "決まった物（gsap・@gsap/react・lenis・three・@react-three/fiber・@react-three/drei）以外"
 run_factory libs-nodesign nextjs "説明" DESIGN_FILE="$T/design-bad.md" LIBS_FILE="$T/libs.txt" > /dev/null
 assert_not_contains "デザイン仕様が雛形のままなら入れない" "$(cat "$T/calls.log")" "npm install"
 run_factory libs-py python "説明" LIBS_FILE="$T/libs.txt" > /dev/null
@@ -232,5 +232,27 @@ run_factory detail-ok nextjs "説明" MEMO_DETAIL="載せる作品：agent-desk 
 assert_contains "詳しいメモが入る" "$(cat "$T/calls.log")" "載せる作品：agent-desk と工場"
 run_factory detail-none nextjs "説明" > /dev/null
 assert_not_contains "無ければ節を作らない" "$(cat "$T/calls.log")" "詳しいメモ"
+
+echo "== three.js（3D）も決まった物として入れる"
+printf '%s\n' "@react-three/drei" > "$T/libs3d.txt"
+run_factory libs-3d nextjs "説明" DESIGN_FILE="$T/design-ok.md" LIBS_FILE="$T/libs3d.txt" > /dev/null
+assert_contains "three・型・fiber・drei を一緒に入れる" "$(cat "$T/calls.log")" "--save @react-three/drei@^10 @react-three/fiber@^9 @types/three@^0 three@^0"
+
+echo "== 写真：試作で使った物だけ、本物の画像だけを public/photos/ に入れ、出どころも入れる。審査役の点数を書く"
+R="$T/ref2"; P="$T/photos"; rm -rf "$R" "$P"; mkdir -p "$R" "$P"
+printf '\x89PNG\r\n\x1a\nrest' > "$R/01-hero-390.png"
+printf '<img src="photos/01-river.jpg"><div style="background:url(photos/03-fake.jpg)">' > "$R/01-hero.html"
+printf '\xff\xd8\xff\xe0jpeg' > "$P/01-river.jpg"
+printf '\xff\xd8\xff\xe0jpeg' > "$P/02-unused.jpg"
+printf 'not an image' > "$P/03-fake.jpg"
+printf '%s\n' '- `01-river.jpg`：River（A、CC0、2400×1600）https://src.test/1' '- `02-unused.jpg`：Unused（B、CC0）' > "$P/CREDITS.md"
+printf '%s\n' "# 審査" "点数: 8.4" > "$T/critique.md"
+run_factory photos-ok nextjs "説明" DESIGN_FILE="$T/design-ok.md" DESIGN_REF_DIR="$R" PHOTOS_DIR="$P" CRITIQUE_FILE="$T/critique.md" > /dev/null
+assert_eq "使った本物の写真だけ" "01-river.jpg CREDITS.md" "$(git --git-dir="$T/remotes/o/photos-ok.git" ls-tree --name-only main public/photos/ | xargs -n1 basename | sort | xargs)"
+assert_contains "出どころは使った物だけ" "$(file_in o/photos-ok public/photos/CREDITS.md)" "River（A、CC0"
+assert_not_contains "使っていない物の出どころは入れない" "$(file_in o/photos-ok public/photos/CREDITS.md)" "Unused"
+assert_contains "試作の HTML は public/photos/ を見る" "$(file_in o/photos-ok docs/design-ref/01-hero.html)" 'src="../../public/photos/01-river.jpg"'
+assert_contains "結果に写真を書く" "$(cat "$T/comment.txt")" "試作で使った写真 1 枚"
+assert_contains "結果に審査役の点数を書く" "$(cat "$T/comment.txt")" "最後の点数：8.4 / 10"
 
 finish
